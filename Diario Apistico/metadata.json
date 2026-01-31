@@ -1,0 +1,9 @@
+{
+  "name": "Diario apistico",
+  "description": "finalmente funziona tutto",
+  "requestFramePermissions": [
+    "microphone",
+    "camera",
+    "geolocation"
+  ]
+}
