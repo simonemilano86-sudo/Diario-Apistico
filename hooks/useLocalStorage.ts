@@ -1,55 +1,55 @@
-
 import { useState, useEffect, useCallback, Dispatch, SetStateAction } from 'react';
 
-function useLocalStorage<T,>(key: string, initialValue: T): [T, Dispatch<SetStateAction<T>>] {
-    // Inizializza lo stato leggendo da localStorage o usando il valore iniziale
-    const [storedValue, setStoredValue] = useState<T>(() => {
-        try {
-            if (typeof window === 'undefined') {
-                return initialValue;
-            }
-            const item = window.localStorage.getItem(key);
-            return item ? JSON.parse(item) : initialValue;
-        } catch (error) {
-            console.error(error);
-            return initialValue;
+function safeParse<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback;
+
+  // Protegge da valori "sporchi" salvati come stringa
+  if (raw === 'undefined' || raw === 'null') return fallback;
+
+  try {
+    const parsed = JSON.parse(raw) as T;
+    // Se parse ritorna null/undefined, torna al fallback
+    return (parsed ?? fallback) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function useLocalStorage<T>(key: string, initialValue: T): [T, Dispatch<SetStateAction<T>>] {
+  const [storedValue, setStoredValue] = useState<T>(() => {
+    if (typeof window === 'undefined') return initialValue;
+    return safeParse(window.localStorage.getItem(key), initialValue);
+  });
+
+  const setValue = useCallback((value: T | ((val: T) => T)) => {
+    try {
+      setStoredValue((prevValue) => {
+        const valueToStore = value instanceof Function ? value(prevValue) : value;
+
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(key, JSON.stringify(valueToStore));
         }
-    });
 
-    // Memoizzato per evitare di scatenare useEffect dipendenti ad ogni render
-    const setValue = useCallback((value: T | ((val: T) => T)) => {
-        try {
-            setStoredValue((prevValue) => {
-                const valueToStore = value instanceof Function ? value(prevValue) : value;
-                
-                if (typeof window !== 'undefined') {
-                    window.localStorage.setItem(key, JSON.stringify(valueToStore));
-                }
-                
-                return valueToStore;
-            });
-        } catch (error) {
-            console.error(error);
-        }
-    }, [key]);
+        return valueToStore;
+      });
+    } catch (error) {
+      console.error(error);
+    }
+  }, [key]);
 
-    // Ascolta cambiamenti da altre schede/finestre
-    useEffect(() => {
-        const handleStorageChange = (e: StorageEvent) => {
-            if (e.key === key && e.newValue) {
-                try {
-                    setStoredValue(JSON.parse(e.newValue));
-                } catch (error) {
-                    console.error(error);
-                }
-            }
-        };
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key !== key) return;
 
-        window.addEventListener('storage', handleStorageChange);
-        return () => window.removeEventListener('storage', handleStorageChange);
-    }, [key]);
+      // se e.newValue è null (key rimossa), ripristina initialValue
+      setStoredValue(safeParse<T>(e.newValue, initialValue));
+    };
 
-    return [storedValue, setValue];
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, [key, initialValue]);
+
+  return [storedValue, setValue];
 }
 
 export default useLocalStorage;

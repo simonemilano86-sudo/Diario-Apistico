@@ -1,8 +1,10 @@
-
 import React, { useState } from 'react';
 import { Apiary, Hive } from '../types';
 import { BackArrowIcon, NfcIcon, PlusIcon, SearchIcon, XCircleIcon, TrashIcon } from './Icons';
 import Modal from './Modal';
+import { Capacitor } from '@capacitor/core';
+import { CapacitorNfc } from '@capgo/capacitor-nfc';
+import { logger } from '../services/logger';
 
 interface NfcViewProps {
     apiaries: Apiary[];
@@ -10,12 +12,14 @@ interface NfcViewProps {
     onOpenConfig: () => void;
     onRemoveTag: (hiveId: string) => void;
     isScrolling?: boolean;
+    onTagScanned?: (tagId: string) => void;
 }
 
-const NfcView: React.FC<NfcViewProps> = ({ apiaries, onBack, onOpenConfig, onRemoveTag, isScrolling }) => {
+const NfcView: React.FC<NfcViewProps> = ({ apiaries, onBack, onOpenConfig, onRemoveTag, isScrolling, onTagScanned }) => {
     const [searchQuery, setSearchQuery] = useState('');
     const [isSearchVisible, setIsSearchVisible] = useState(false);
     const [hiveToRemoveTag, setHiveToRemoveTag] = useState<{id: string, name: string} | null>(null);
+    const [isScanning, setIsScanning] = useState(false);
 
     // Flatten all hives that have an NFC tag
     const taggedHives = apiaries.flatMap(apiary => 
@@ -40,12 +44,63 @@ const NfcView: React.FC<NfcViewProps> = ({ apiaries, onBack, onOpenConfig, onRem
         }
     };
 
+    const handleScan = async () => {
+        if (!onTagScanned) return;
+        setIsScanning(true);
+        try {
+            if (Capacitor.isNativePlatform()) {
+                await CapacitorNfc.removeAllListeners();
+                await CapacitorNfc.addListener('nfcTag', (data: any) => {
+                    const toHex = (arr: number[]) => arr.map(i => i.toString(16).padStart(2, '0')).join(':').toUpperCase();
+                    let tagId = 'unknown';
+                    try {
+                        if (data?.id && Array.isArray(data.id)) tagId = toHex(data.id);
+                        else if (data?.tag?.id && Array.isArray(data.tag.id)) tagId = toHex(data.tag.id);
+                        else if (typeof data?.id === 'string') tagId = data.id;
+                    } catch {}
+                    
+                    onTagScanned(tagId);
+                    
+                    // Stop
+                    const stop = (CapacitorNfc as any).stopScan || (CapacitorNfc as any).stopSession || (CapacitorNfc as any).stop;
+                    if(stop) stop.call(CapacitorNfc);
+                    setIsScanning(false);
+                });
+
+                const start = (CapacitorNfc as any).startScan || (CapacitorNfc as any).scan || (CapacitorNfc as any).startSession || (CapacitorNfc as any).start;
+                if(start) await start.call(CapacitorNfc);
+            } else {
+                // Web Mock
+                setTimeout(() => {
+                    const mock = prompt("Web Debug: Inserisci ID Tag");
+                    if(mock) onTagScanned(mock);
+                    setIsScanning(false);
+                }, 500);
+            }
+        } catch (e: any) {
+            logger.log("Scan error: " + e.message, "error");
+            setIsScanning(false);
+        }
+    };
+
     return (
         <div className="animate-fade-in pb-20">
             <div className="flex justify-between items-center mb-6 h-10">
                 <button onClick={onBack} className="flex items-center justify-center w-10 h-10 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-full shadow-sm border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-600 transition"><BackArrowIcon className="w-5 h-5"/></button>
                 
                 <div className="flex items-center gap-2">
+                     {/* Scan Button */}
+                     {onTagScanned && (
+                        <button 
+                            onClick={handleScan}
+                            disabled={isScanning}
+                            className={`flex items-center justify-center w-10 h-10 rounded-full border transition shadow-sm ${isScanning ? 'bg-indigo-100 border-indigo-300 text-indigo-700 animate-pulse' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300'}`}
+                            title="Scansiona Tag"
+                        >
+                            <NfcIcon className="w-5 h-5" />
+                        </button>
+                     )}
+
                      {/* Barra di Ricerca */}
                      <div className={`flex items-center transition-all duration-300 ${isSearchVisible ? 'w-40 sm:w-64' : 'w-10'}`}>
                         {isSearchVisible ? (
