@@ -61,6 +61,7 @@ import MultiAccessModal from './components/MultiAccessModal';
 import FeedbackModal from './components/AppFeedbackModal';
 import TrashView from './components/TrashView';
 import PremiumGiftModal from './components/PremiumGiftModal';
+import { LandingPageView } from './components/LandingPageView';
 
 import {
   StylizedFlowerIcon,
@@ -96,6 +97,14 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [currentUserId, setCurrentUserId] = useLocalStorage<string | null>('beewise-user-id', null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const isLandingDomain = window.location.hostname === 'diarioapistico.com' ||
+                          window.location.hostname === 'www.diarioapistico.com';
+
+  const [showLanding, setShowLanding] = useState<boolean>(() => {
+    return isLandingDomain ||
+           window.location.search.includes('landing') ||
+           window.location.hash.includes('landing');
+  });
 
   useEffect(() => {
     const handleOnline = () => {
@@ -456,6 +465,23 @@ const App: React.FC = () => {
       mainRef.current.scrollTop = 0;
     }
   }, [view]);
+
+  // Gestione query parameter auth=signin / auth=signup per i reindirizzamenti dal dominio di landing
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const hashPart = window.location.hash.includes('?') ? window.location.hash.split('?')[1] : '';
+    const hashParams = new URLSearchParams(hashPart);
+    
+    const authVal = params.get('auth') || hashParams.get('auth');
+    if (authVal === 'signin' || authVal === 'signup') {
+      setAuthModalMode(authVal);
+      setIsAuthModalOpen(true);
+      
+      // Pulisce la barra degli indirizzi senza ricaricare la pagina
+      const nextURL = window.location.origin + window.location.pathname;
+      window.history.replaceState({}, document.title, nextURL);
+    }
+  }, []);
 
   // --- LOGICA HISTORY PER BACK SWIPE ---
   const isNavigatingRef = useRef(false);
@@ -1627,6 +1653,55 @@ const App: React.FC = () => {
     );
   }
 
+  const shouldRenderLanding = !loading && (showLanding || isLandingDomain || !user);
+
+  if (shouldRenderLanding) {
+    return (
+      <>
+        <LandingPageView 
+          onEnterApp={() => {
+            if (isLandingDomain) {
+              window.location.href = 'https://app.diarioapistico.com';
+            } else if (user) {
+              setShowLanding(false);
+            } else {
+              setAuthModalMode('signin');
+              setIsAuthModalOpen(true);
+            }
+          }} 
+          onOpenAuth={(mode) => {
+            if (isLandingDomain) {
+              window.location.href = `https://app.diarioapistico.com/?auth=${mode}`;
+            } else {
+              setAuthModalMode(mode);
+              setIsAuthModalOpen(true);
+            }
+          }} 
+        />
+        
+        <AuthModal 
+          isOpen={isAuthModalOpen} 
+          onClose={() => {
+            setIsAuthModalOpen(false);
+            resetPasswordRecoveryFlow();
+          }} 
+          defaultMode={authModalMode}
+        />
+
+        {/* Pulsante Floating per alternare alla modalità Sviluppo App */}
+        {!isLandingDomain && user && (
+          <button 
+            onClick={() => setShowLanding(false)}
+            className="fixed bottom-6 right-6 z-[9999] px-4 py-2.5 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-500 rounded-full shadow-lg border border-amber-500 transition-transform active:scale-95 flex items-center space-x-1.5 cursor-pointer"
+            title="Questo pulsante compare solo in anteprima per farti tornare all'interfaccia dell'App"
+          >
+            <span>💻 Apri l'App</span>
+          </button>
+        )}
+      </>
+    );
+  }
+
   return (
     <div className="h-screen overflow-hidden bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 flex flex-col">
       <Header 
@@ -1658,12 +1733,20 @@ const App: React.FC = () => {
             <p className="text-slate-600 dark:text-slate-400 mb-8 max-w-md mx-auto">
               Accedi per gestire i tuoi apiari, collaborare con il tuo team e sincronizzare i dati sul cloud in modo sicuro.
             </p>
-            <button
-              onClick={() => { setAuthModalMode('signin'); setIsAuthModalOpen(true); }}
-              className="px-8 py-3 bg-amber-500 text-white font-bold rounded-full hover:bg-amber-600 transition-colors shadow-md text-lg mx-auto"
-            >
-              Accedi o Registrati
-            </button>
+            <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
+              <button
+                onClick={() => { setAuthModalMode('signin'); setIsAuthModalOpen(true); }}
+                className="px-8 py-3 bg-amber-500 text-white font-bold rounded-full hover:bg-amber-600 transition-colors shadow-md text-lg cursor-pointer"
+              >
+                Accedi o Registrati
+              </button>
+              <button
+                onClick={() => setShowLanding(true)}
+                className="px-6 py-3 bg-white dark:bg-slate-850 text-slate-755 dark:text-white border border-slate-200 dark:border-slate-700 font-semibold rounded-full hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-base cursor-pointer"
+              >
+                Vedi Presentazione & Prezzi
+              </button>
+            </div>
           </div>
         ) : (
           <>
