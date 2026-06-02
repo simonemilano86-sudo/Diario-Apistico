@@ -37,34 +37,13 @@ async function startServer() {
   // Scale data update (from Arduino)
   app.post('/api/scale/update', async (req, res) => {
     console.log('>>> [SCALE API] Richiesta ricevuta:', req.body);
-    
-    let readings: any[] = [];
-    let commonScaleId = '';
-    let commonApiKey = '';
+    const { weight, battery, api_key, scale_id } = req.body;
 
-    if (Array.isArray(req.body)) {
-      readings = req.body;
-    } else if (req.body && Array.isArray(req.body.readings)) {
-      readings = req.body.readings;
-      commonScaleId = req.body.scale_id || req.body.scaleId;
-      commonApiKey = req.body.api_key || req.body.apiKey;
-    } else if (req.body) {
-      readings = [req.body];
-    }
-
-    if (readings.length === 0) {
-      return res.status(400).json({ error: 'No readings provided' });
+    if ((!api_key && !scale_id) || weight === undefined) {
+      return res.status(400).json({ error: 'Missing parameters' });
     }
 
     try {
-      const firstReading = readings[0] || {};
-      const scale_id = firstReading.scale_id || firstReading.scaleId || commonScaleId;
-      const api_key = firstReading.api_key || firstReading.apiKey || commonApiKey;
-
-      if (!api_key && !scale_id) {
-        return res.status(400).json({ error: 'Missing parameters scale_id or api_key' });
-      }
-
       let targetApiaryId = '';
       let targetScaleId = scale_id || '';
       
@@ -100,35 +79,16 @@ async function startServer() {
          return res.status(400).json({ error: 'Incomplete authentication' });
       }
 
-      // Map readings to DB rows
-      const rowsToInsert = readings.map((r, index) => {
-        let readingTime = r.timestamp || r.time || r.createdAt;
-        if (!readingTime) {
-          // Spacer: if multiple readings are sent at once without timestamps, space them back in time so they do not overlap exactly
-          const d = new Date();
-          d.setSeconds(d.getSeconds() - index);
-          readingTime = d.toISOString();
-        } else {
-          readingTime = new Date(readingTime).toISOString();
-        }
-
-        return {
-          apiaryId: r.apiaryId || r.apiary_id || targetApiaryId,
-          scaleId: targetScaleId,
-          weight: Number(r.weight),
-          battery: Number(r.battery || r.batteryLevel || 100),
-          timestamp: readingTime
-        };
-      }).filter(row => !isNaN(row.weight));
-
-      if (rowsToInsert.length === 0) {
-        return res.status(400).json({ error: 'No valid weighings inside payload' });
-      }
-
-      // 2. Insert readings
+      // 2. Insert reading
       const { error } = await supabase
         .from('scale_data')
-        .insert(rowsToInsert);
+        .insert([{
+          apiaryId: targetApiaryId,
+          scaleId: targetScaleId,
+          weight: Number(weight),
+          battery: Number(battery || 0),
+          timestamp: new Date().toISOString()
+        }]);
 
       if (error) throw error;
 
@@ -150,7 +110,7 @@ async function startServer() {
           .eq('id', commands[0].id);
       }
 
-      res.json({ success: true, count: rowsToInsert.length, command: nextCommand });
+      res.json({ success: true, command: nextCommand });
     } catch (err: any) {
       console.error('Scale update error:', err);
       res.status(500).json({ error: err.message });
