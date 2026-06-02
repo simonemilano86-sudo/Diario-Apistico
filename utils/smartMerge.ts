@@ -45,7 +45,8 @@ function mergeInspections(
 function mergeHives(
   local: Hive[] = [],
   cloud: Hive[] = [],
-  deletedIds: Set<string>
+  deletedIds: Set<string>,
+  allLocalHiveIds: Set<string> = new Set()
 ): Hive[] {
   const safeLocal = Array.isArray(local) ? local : [];
   const safeCloud = Array.isArray(cloud) ? cloud : [];
@@ -71,6 +72,13 @@ function mergeHives(
     } else if (localHive) {
       mergedHives.push(localHive);
     } else if (cloudHive) {
+      // CRITICO: Se l'arnia è nel cloud per questo apiario, ma LOCALMENTE 
+      // esiste in un altro apiario (è in allLocalHiveIds), NON la ripristiniamo qui.
+      // Significa che è stata spostata.
+      if (allLocalHiveIds.has(id)) {
+        // Skip: l'arnia è stata spostata in un altro apiario localmente
+        return;
+      }
       mergedHives.push(cloudHive);
     }
   });
@@ -87,6 +95,13 @@ export function smartMergeApiaries(
   const mergedApiaries: Apiary[] = [];
 
   const allIds = new Set([...local.map((a) => a.id), ...cloud.map((a) => a.id)]);
+  
+  // Raccogliamo tutti gli ID delle arnie presenti localmente in qualsiasi apiario
+  // Questo ci serve per capire se un'arnia è stata SPOSTATA invece che eliminata.
+  const allLocalHiveIds = new Set<string>();
+  local.forEach(a => {
+    if (a.hives) a.hives.forEach(h => allLocalHiveIds.add(h.id));
+  });
 
   allIds.forEach((id) => {
     if (!isNotDeleted(id, deletedSet)) return;
@@ -95,10 +110,11 @@ export function smartMergeApiaries(
     const cloudApiary = cloud.find((a) => a.id === id);
 
     if (localApiary && cloudApiary) {
+      // In mergeHives passiamo allLocalHiveIds per evitare di ripristinare arnie spostate
       mergedApiaries.push({
         ...cloudApiary,
         ...localApiary,
-        hives: mergeHives(localApiary.hives || [], cloudApiary.hives || [], deletedSet),
+        hives: mergeHives(localApiary.hives || [], cloudApiary.hives || [], deletedSet, allLocalHiveIds),
       });
     } else if (localApiary) {
       mergedApiaries.push(localApiary);

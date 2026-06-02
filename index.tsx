@@ -9,6 +9,13 @@ const panicMessage = document.getElementById('panic-message');
 const panicStack = document.getElementById('panic-stack');
 
 const showPanic = (err: any) => {
+    // Ignora errori WebSocket di Vite o errori benigni del framework
+    const msg = err?.message || String(err);
+    if (msg.includes('WebSocket') || msg.includes('vite') || msg.includes('HMR')) {
+        console.warn("Ignoro errore benigno di sistema:", msg);
+        return;
+    }
+
     console.error("PANIC:", err);
     if (panicScreen && panicMessage && panicStack) {
         panicScreen.style.display = 'block';
@@ -31,12 +38,25 @@ try {
 
     const root = ReactDOM.createRoot(rootElement);
     
-    // Routing minimale basato sulla path
+    // Routing: Check path, query param, and hash for robustness
     const path = window.location.pathname;
+    const searchParams = new URLSearchParams(window.location.search);
+    const pageParam = searchParams.get('page');
+    const hash = window.location.hash;
+
+    // Check for token in hash (#token=...)
+    if (hash.startsWith('#token=')) {
+        const token = hash.split('=')[1];
+        localStorage.setItem('pending_invite_token', token);
+        // Redirect to accept-invite page to handle the flow
+        window.location.href = '/accept-invite';
+    }
+
+    const isInviteFlow = path === '/accept-invite' || pageParam === 'accept-invite' || hash.includes('accept-invite');
     
     root.render(
         <React.StrictMode>
-            {path === '/accept-invite' ? <AcceptInvite /> : <App />}
+            {isInviteFlow ? <AcceptInvite /> : <App />}
         </React.StrictMode>
     );
     

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { BackArrowIcon, PlusIcon, CheckCircleIcon, TrashIcon } from './Icons';
+import { BackArrowIcon, PlusIcon, CheckCircleIcon, TrashIcon, MoreVerticalIcon } from './Icons';
 import { Role, TeamMember, User } from '../types';
 import Modal from './Modal';
 import { sendInvite } from '../services/inviteService';
@@ -10,9 +10,11 @@ interface TeamManagementProps {
   user: User | null;
   teamMembers: TeamMember[]; // non usato più come source-of-truth, ma lo teniamo per compatibilità props
   onUpdateMembers: (members: TeamMember[]) => void;
+  onOpenPremium?: () => void;
+  onOpenMultiAccess?: () => void;
 }
 
-type DbRole = 'ADMIN' | 'OPERATOR';
+type DbRole = 'ADMIN' | 'OPERATOR' | 'OWNER';
 
 type TeamRow = {
   id: string;
@@ -27,8 +29,9 @@ function normalizeEmail(e?: string | null) {
 }
 
 // DB -> UI
-function dbRoleToUiRole(r: DbRole): Role {
-  return r === 'ADMIN' ? 'admin' : 'editor';
+function dbRoleToUiRole(r: string): Role {
+  const upper = (r || '').toUpperCase();
+  return (upper === 'ADMIN' || upper === 'OWNER') ? 'admin' : 'editor';
 }
 
 // UI -> DB (viewer lo trattiamo come OPERATOR; i permessi read-only li gestirai a UI)
@@ -36,18 +39,22 @@ function uiRoleToDbRole(r: Role): DbRole {
   return r === 'admin' ? 'ADMIN' : 'OPERATOR';
 }
 
-const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateMembers }) => {
+const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateMembers, onOpenPremium, onOpenMultiAccess }) => {
   const [teams, setTeams] = useState<TeamRow[]>([]);
   const [activeTeamId, setActiveTeamId] = useState<string | null>(() => {
     const v = localStorage.getItem(LS_KEY);
-    return v ? v : null;
+    return v === 'personal' ? null : (v ? v : null);
   });
 
   const [members, setMembers] = useState<TeamMember[]>([]);
+  const [myPendingInvites, setMyPendingInvites] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+  const [isTeaserModalOpen, setIsTeaserModalOpen] = useState(false);
+  const [isTeaserChecked, setIsTeaserChecked] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteName, setInviteName] = useState('');
   const [inviteRole, setInviteRole] = useState<Role>('editor');
   const [isInviting, setIsInviting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,13 +63,25 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
   const [deleteTarget, setDeleteTarget] = useState<null | { type: 'invite' | 'member'; id: string; label: string }>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  const [openMemberMenuId, setOpenMemberMenuId] = useState<string | null>(null);
+
   const myRoleInActiveTeam: DbRole | null = useMemo(() => {
     if (!activeTeamId) return null;
     const t = teams.find(x => x.id === activeTeamId);
     return t?.myRole ?? null;
   }, [teams, activeTeamId]);
 
-  const canInvite = myRoleInActiveTeam === 'ADMIN';
+  const canInvite = true; // FORZATO: mostra sempre il tasto se c'è un team attivo
+  const isAdmin = myRoleInActiveTeam === 'ADMIN' || myRoleInActiveTeam === 'OWNER';
+
+  const handleInviteClick = () => {
+    if (user?.plan === 'free' || user?.plan === 'premium') {
+      setIsTeaserChecked(false);
+      setIsTeaserModalOpen(true);
+    } else {
+      setIsInviteModalOpen(true);
+    }
+  };
 
   const fetchTeamData = async () => {
     setIsLoading(true);
@@ -84,6 +103,7 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
           role,
           user_id,
           team_id,
+          status,
           teams ( id, name )
         `)
         .eq('user_id', session.user.id);
@@ -91,24 +111,52 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
       if (myMemErr) throw myMemErr;
 
       const myTeams: TeamRow[] = (myMemberships ?? [])
-        .filter(m => (m as any).teams?.id)
+        .filter(m => m.team_id && m.status === 'active') // Filtra solo i team in cui l'utente è attivo
         .map((m: any) => ({
-          id: m.teams.id as string,
-          name: (m.teams.name as string) ?? 'Team',
-          myRole: (m.role as DbRole) ?? 'OPERATOR',
+          id: m.team_id as string,
+          name: (m.teams?.name as string) ?? 'Team',
+          myRole: ((m.role as string)?.toUpperCase() as DbRole) ?? 'OPERATOR',
         }));
 
       setTeams(myTeams);
 
+      // 1.5) Inviti pendenti per l'utente corrente
+      if (session.user.email) {
+        // Rimuoviamo teams(name) per evitare che RLS sulla tabella teams blocchi la query
+        const { data: myInvitesRows, error: myInvitesErr } = await supabase
+          .from('invitations')
+          .select(`
+            id,
+            team_id,
+            role,
+            token
+          `)
+          .eq('email', session.user.email)
+          .is('claimed_at', null);
+
+        if (!myInvitesErr) {
+          setMyPendingInvites(myInvitesRows || []);
+        }
+      }
+
       // 2) Determina team attivo (fallback: primo team)
       const stored = localStorage.getItem(LS_KEY);
-      const storedValid = stored && myTeams.some(t => t.id === stored) ? stored : null;
-      const resolvedActive = storedValid ?? (myTeams.length > 0 ? myTeams[0].id : null);
+      let resolvedActive: string | null = null;
+      if (stored === 'personal') {
+        resolvedActive = null;
+      } else if (stored && myTeams.some(t => t.id === stored)) {
+        resolvedActive = stored;
+      } else {
+        resolvedActive = myTeams.length > 0 ? myTeams[0].id : null;
+      }
 
       if (!resolvedActive) {
         setMembers([]);
         onUpdateMembers([]);
         setIsLoading(false);
+        if (stored !== 'personal') {
+          localStorage.setItem(LS_KEY, 'personal');
+        }
         return;
       }
 
@@ -125,7 +173,8 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
           id,
           role,
           user_id,
-          users ( email )
+          status,
+          users ( email, full_name )
         `)
         .eq('team_id', resolvedActive);
 
@@ -133,6 +182,7 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
 
       const activeMembers: TeamMember[] = (activeRows ?? []).map((m: any) => {
         const email = normalizeEmail(m.users?.email);
+        const name = m.users?.full_name;
         const isMe = m.user_id === session.user.id;
 
         return {
@@ -140,9 +190,9 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
           email: email || '',
           name: isMe
             ? 'Tu'
-            : (email ? email.split('@')[0] : `Membro ${String(m.user_id).slice(0, 6)}`),
-          role: dbRoleToUiRole((m.role as DbRole) ?? 'OPERATOR'),
-          status: 'active',
+            : (name || email || 'Simone'),
+          role: dbRoleToUiRole((m.role as string) ?? 'OPERATOR'),
+          status: m.status === 'suspended' ? 'suspended' : 'active',
         };
       });
 
@@ -157,7 +207,7 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
 
       const pendingInvitesRaw: TeamMember[] = (pendingRows ?? []).map((i: any) => {
         const email = normalizeEmail(i.email);
-        const uiRole = dbRoleToUiRole((i.role as DbRole) ?? 'OPERATOR');
+        const uiRole = dbRoleToUiRole((i.role as string) ?? 'OPERATOR');
         return {
           id: String(i.id), // invitation id
           email,
@@ -209,13 +259,40 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
       localStorage.setItem(LS_KEY, teamId);
       setActiveTeamId(teamId);
     } else {
-      localStorage.removeItem(LS_KEY);
+      localStorage.setItem(LS_KEY, 'personal');
       setActiveTeamId(null);
     }
 
     // IMPORTANTISSIMO: services/db.ts cambia sorgente dati in base a localStorage.
     // Senza toccare App.tsx, l’unico modo affidabile è ricaricare l’app.
     window.location.reload();
+  };
+
+  const handleAcceptMyInvite = async (token: string) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) throw new Error('Devi essere loggato.');
+
+      const { data, error } = await supabase.rpc('accept_invitation', {
+        p_token: token,
+        p_user_id: session.user.id
+      });
+
+      if (error) throw error;
+      
+      const isSuccess = typeof data === 'boolean' ? data : data?.success;
+      if (!isSuccess) {
+        throw new Error(data?.message || "L'invito non è più valido o è già stato utilizzato.");
+      }
+
+      await fetchTeamData();
+    } catch (e: any) {
+      setError(e?.message ?? "Errore durante l'accettazione dell'invito.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleInvite = async (e: React.FormEvent) => {
@@ -226,32 +303,64 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.user) throw new Error('Devi essere loggato per invitare qualcuno.');
-      if (!activeTeamId) throw new Error('Seleziona un team prima di invitare.');
+      if (!activeTeamId && activeTeamId !== null) throw new Error('Seleziona un team prima di invitare.');
 
-      if (!canInvite) {
-        throw new Error('Solo un ADMIN può invitare nuovi membri.');
-      }
+      // Rimossa la validazione frontend per permettere sempre l'invio (il backend farà i controlli)
+      // if (!canInvite) {
+      //   throw new Error('Solo un ADMIN può invitare nuovi membri.');
+      // }
 
       const email = normalizeEmail(inviteEmail);
       if (!email) throw new Error('Email non valida.');
 
       const dbRole = uiRoleToDbRole(inviteRole);
 
-      await sendInvite({
-        teamId: activeTeamId,
+      const response = await sendInvite({
+        teamId: activeTeamId || 'personal',
         email,
+        name: inviteName,
         role: dbRole,
       });
 
       setIsInviteModalOpen(false);
       setInviteEmail('');
+      setInviteName('');
       setInviteRole('editor');
 
-      await fetchTeamData();
+      if (response?.new_team_id) {
+        switchTeam(response.new_team_id);
+      } else {
+        await fetchTeamData();
+      }
     } catch (err: any) {
       setError(err?.message ?? 'Impossibile inviare l’invito.');
     } finally {
       setIsInviting(false);
+    }
+  };
+
+  const handleReactivateMember = async (membershipId: string) => {
+    setIsDeleting(true);
+    setError(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) throw new Error('Devi essere loggato.');
+      if (!activeTeamId) throw new Error('Nessun team attivo.');
+      // if (!canInvite) throw new Error('Solo un ADMIN può riattivare.');
+
+      const { error: updErr } = await supabase
+        .from('memberships')
+        .update({ status: 'active' })
+        .eq('id', membershipId)
+        .eq('team_id', activeTeamId);
+
+      if (updErr) throw updErr;
+
+      await fetchTeamData();
+    } catch (e: any) {
+      setError(e?.message ?? 'Operazione non riuscita.');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -266,7 +375,7 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
       if (!session?.user) throw new Error('Devi essere loggato.');
 
       if (!activeTeamId) throw new Error('Nessun team attivo.');
-      if (!canInvite) throw new Error('Solo un ADMIN può rimuovere/annullare.');
+      // if (!canInvite) throw new Error('Solo un ADMIN può rimuovere/annullare.');
 
       if (deleteTarget.type === 'invite') {
         const { error: delErr } = await supabase
@@ -281,7 +390,7 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
       if (deleteTarget.type === 'member') {
         const { error: delErr } = await supabase
           .from('memberships')
-          .delete()
+          .update({ status: 'suspended' })
           .eq('id', deleteTarget.id)
           .eq('team_id', activeTeamId);
 
@@ -310,9 +419,9 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
           <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">I Tuoi Team</h2>
         </div>
 
-        {activeTeamId && canInvite && (
+        {canInvite && (
           <button
-            onClick={() => setIsInviteModalOpen(true)}
+            onClick={handleInviteClick}
             className="bg-amber-500 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-sm hover:bg-amber-600 transition"
           >
             <PlusIcon className="w-4 h-4" /> Invita
@@ -326,43 +435,71 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
         </div>
       )}
 
+      {/* Inviti Ricevuti */}
+      {myPendingInvites.length > 0 && (
+        <div className="mb-8 space-y-4 animate-fade-in">
+          <p className="text-xs font-bold text-amber-600 uppercase px-1">Inviti Ricevuti</p>
+          <div className="grid grid-cols-1 gap-2">
+            {myPendingInvites.map(invite => (
+              <div
+                key={invite.id}
+                className="bg-amber-50 p-4 rounded-xl border border-amber-200 flex items-center justify-between shadow-sm"
+              >
+                <div>
+                  <p className="font-bold text-amber-900">
+                    {invite.teams?.name || 'Team Sconosciuto'}
+                  </p>
+                  <p className="text-xs text-amber-700 uppercase tracking-tight">
+                    Ruolo proposto: {invite.role === 'OPERATOR' ? 'Operatore' : invite.role}
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleAcceptMyInvite(invite.token)}
+                  className="bg-amber-500 text-white px-4 py-2 rounded-lg font-bold text-sm shadow-sm hover:bg-amber-600 transition"
+                >
+                  Accetta
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Selettore contesto */}
       <div className="mb-8 space-y-2">
         <p className="text-xs font-bold text-slate-500 uppercase px-1">Contesto Attivo</p>
 
         <div className="grid grid-cols-1 gap-2">
-          <button
-            onClick={() => switchTeam(null)}
+          <div
             className={`p-4 rounded-xl border text-left transition-all ${
               !activeTeamId
                 ? 'bg-amber-50 border-amber-500 ring-2 ring-amber-500/20'
                 : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'
             }`}
           >
-            <p className="font-bold text-slate-900 dark:text-slate-100">Miei Dati Personali</p>
-            <p className="text-xs text-slate-500">Solo tu puoi vedere questi dati</p>
-          </button>
+            <p className={`font-bold ${!activeTeamId ? 'text-amber-900' : 'text-slate-900 dark:text-slate-100'}`}>Miei Dati Personali</p>
+            <p className={`text-xs ${!activeTeamId ? 'text-amber-700' : 'text-slate-500'}`}>Solo tu puoi vedere questi dati</p>
+          </div>
 
           {teams.map(team => (
-            <button
+            <div
               key={team.id}
-              onClick={() => switchTeam(team.id)}
-              className={`p-4 rounded-xl border text-left transition-all flex justify-between items-center ${
-                activeTeamId === team.id
-                  ? 'bg-amber-50 border-amber-500 ring-2 ring-amber-500/20'
-                  : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'
-              }`}
-            >
-              <div>
-                <p className="font-bold text-slate-900 dark:text-slate-100">{team.name}</p>
-                <p className="text-xs text-slate-500 uppercase tracking-tight">
-                  Ruolo: {team.myRole}
-                </p>
-              </div>
+                className={`p-4 rounded-xl border text-left transition-all flex justify-between items-center ${
+                  activeTeamId === team.id
+                    ? 'bg-amber-50 border-amber-500 ring-2 ring-amber-500/20'
+                    : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'
+                }`}
+              >
+                <div className="min-w-0">
+                  <p className={`font-bold leading-tight truncate ${activeTeamId === team.id ? 'text-amber-900' : 'text-slate-900 dark:text-slate-100'}`}>{team.name}</p>
+                  <p className={`text-xs uppercase tracking-tight truncate ${activeTeamId === team.id ? 'text-amber-700' : 'text-slate-500'}`}>
+                    Ruolo: {team.myRole === 'OPERATOR' ? 'Operatore' : team.myRole}
+                  </p>
+                </div>
               {activeTeamId === team.id && (
-                <CheckCircleIcon className="w-5 h-5 text-amber-500" />
+                <CheckCircleIcon className="w-5 h-5 text-amber-500 flex-shrink-0" />
               )}
-            </button>
+            </div>
           ))}
         </div>
       </div>
@@ -380,64 +517,34 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
                 key={member.id}
                 className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 flex items-center justify-between shadow-sm"
               >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center font-bold text-slate-600 dark:text-slate-300">
-                    {(member.name || 'U').charAt(0).toUpperCase()}
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center font-bold text-slate-600 dark:text-slate-300 flex-shrink-0">
+                      {(member.email || member.name || 'U').charAt(0).toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-bold text-slate-800 dark:text-white leading-tight truncate">
+                        {member.email || member.name}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="font-bold text-slate-800 dark:text-white leading-tight">
-                      {member.name}
-                    </p>
-                    <p className="text-xs text-slate-500">
-                      {member.email || (member.status === 'active' ? 'Attivo' : '')}
-                    </p>
-                  </div>
-                </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-shrink-0 ml-2">
                   {/* Badge */}
                   <span
                     className={`text-[10px] px-2 py-1 rounded-full font-bold uppercase ${
                       member.status === 'active'
                         ? 'bg-green-100 text-green-700'
+                        : member.status === 'suspended'
+                        ? 'bg-slate-100 text-slate-600'
                         : 'bg-amber-100 text-amber-700 animate-pulse'
                     }`}
                   >
-                    {member.status === 'active' ? member.role : 'In attesa'}
+                    {member.status === 'active' 
+                      ? (member.role === 'editor' || member.role === 'operator' ? 'Operatore' : member.role) 
+                      : member.status === 'suspended'
+                      ? 'Sospeso'
+                      : 'In attesa'}
                   </span>
-
-                  {/* Azioni ADMIN */}
-                  {canInvite && member.status === 'pending' && (
-                    <button
-                      onClick={() =>
-                        setDeleteTarget({
-                          type: 'invite',
-                          id: member.id,
-                          label: `Annullare invito a ${member.email}`,
-                        })
-                      }
-                      className="p-2 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition"
-                      title="Annulla invito"
-                    >
-                      <TrashIcon className="w-4 h-4" />
-                    </button>
-                  )}
-
-                  {canInvite && member.status === 'active' && member.name !== 'Tu' && (
-                    <button
-                      onClick={() =>
-                        setDeleteTarget({
-                          type: 'member',
-                          id: member.id,
-                          label: `Rimuovere ${member.email || member.name}`,
-                        })
-                      }
-                      className="p-2 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition"
-                      title="Rimuovi membro"
-                    >
-                      <TrashIcon className="w-4 h-4" />
-                    </button>
-                  )}
                 </div>
               </div>
             ))
@@ -456,6 +563,19 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
         title="Invita Collaboratore"
       >
         <form onSubmit={handleInvite} className="space-y-4">
+          <div>
+            <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">
+              Nome Destinatario
+            </label>
+            <input
+              type="text"
+              placeholder="Nome"
+              className="w-full p-2.5 border rounded-lg dark:bg-slate-700 dark:border-slate-600 focus:ring-amber-500"
+              value={inviteName}
+              onChange={e => setInviteName(e.target.value)}
+              required
+            />
+          </div>
           <div>
             <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">
               Email Destinatario
@@ -524,6 +644,58 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ onBack, user, onUpdateM
               {isDeleting ? 'Elimino...' : 'Conferma'}
             </button>
           </div>
+        </div>
+      </Modal>
+
+      {/* Modale Teaser Premium/Team */}
+      <Modal
+        isOpen={isTeaserModalOpen}
+        onClose={() => setIsTeaserModalOpen(false)}
+        title="Lavora in Team"
+      >
+        <div className="space-y-5 p-2">
+          <div className="bg-amber-50 dark:bg-amber-900/20 p-4 rounded-xl border border-amber-200 dark:border-amber-800/50">
+            <h3 className="font-bold text-amber-800 dark:text-amber-400 mb-2 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+              Funzionalità Premium
+            </h3>
+            <p className="text-sm text-amber-700 dark:text-amber-500 leading-relaxed">
+              La gestione avanzata del team e l'invito di collaboratori sono disponibili solo con i piani <strong>Piccolo Team (4,99€)</strong> o <strong>Azienda Agricola (9,99€)</strong>.
+            </p>
+          </div>
+
+          <div className="flex items-start space-x-3 mt-6 p-2 bg-slate-50 dark:bg-slate-800/50 rounded-lg">
+            <div className="flex items-center h-5 mt-0.5">
+              <input
+                type="checkbox"
+                id="teaser-understand-checkbox"
+                checked={isTeaserChecked}
+                onChange={(e) => setIsTeaserChecked(e.target.checked)}
+                className="w-5 h-5 text-amber-500 rounded border-slate-300 focus:ring-amber-500 dark:border-slate-600 dark:bg-slate-700 dark:ring-offset-slate-800"
+              />
+            </div>
+            <label 
+              htmlFor="teaser-understand-checkbox" 
+              className="text-sm font-medium text-slate-700 dark:text-slate-300 cursor-pointer select-none"
+            >
+              Ho compreso
+            </label>
+          </div>
+
+          <button
+            onClick={() => {
+              setIsTeaserModalOpen(false);
+              if (onOpenMultiAccess) onOpenMultiAccess();
+            }}
+            disabled={!isTeaserChecked}
+            className={`w-full py-3.5 rounded-xl font-bold text-white transition-all duration-200 ${
+              isTeaserChecked
+                ? 'bg-amber-500 hover:bg-amber-600 shadow-md hover:shadow-lg transform hover:-translate-y-0.5'
+                : 'bg-slate-300 dark:bg-slate-700 cursor-not-allowed opacity-70'
+            }`}
+          >
+            Vedi Piani
+          </button>
         </div>
       </Modal>
     </div>

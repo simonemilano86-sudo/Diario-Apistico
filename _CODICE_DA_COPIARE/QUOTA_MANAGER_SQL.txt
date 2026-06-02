@@ -1,0 +1,35 @@
+-- 1. Crea la tabella per gestire le quote degli utenti
+CREATE TABLE IF NOT EXISTS public.user_quotas (
+    user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    tokens_used INTEGER DEFAULT 0,
+    plan TEXT DEFAULT 'free', -- 'free' o 'premium'
+    last_reset TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 2. Abilita la Row Level Security (RLS)
+ALTER TABLE public.user_quotas ENABLE ROW LEVEL SECURITY;
+
+-- 3. Policy: Gli utenti possono leggere solo la propria quota
+CREATE POLICY "Users can view own quota" 
+    ON public.user_quotas FOR SELECT 
+    USING (auth.uid() = user_id);
+
+-- 3.1 Policy: Gli utenti possono aggiornare la propria quota (necessario per l'upgrade)
+CREATE POLICY "Users can update own quota" 
+    ON public.user_quotas FOR UPDATE 
+    USING (auth.uid() = user_id);
+
+-- 3.2 Policy: Gli utenti possono inserire la propria quota (necessario per il primo login se non gestito da trigger)
+CREATE POLICY "Users can insert own quota" 
+    ON public.user_quotas FOR INSERT 
+    WITH CHECK (auth.uid() = user_id);
+
+-- 4. Funzione sicura per incrementare i token (evita problemi se l'utente fa due domande contemporaneamente)
+CREATE OR REPLACE FUNCTION increment_tokens(x INT, row_id UUID)
+RETURNS void AS $$
+BEGIN
+  UPDATE public.user_quotas
+  SET tokens_used = tokens_used + x
+  WHERE user_id = row_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;

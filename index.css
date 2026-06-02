@@ -1,4 +1,6 @@
 
+@import "tailwindcss";
+
 /* Reset e stili base per l'app */
 html, body {
     height: 100%;

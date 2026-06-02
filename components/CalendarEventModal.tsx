@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Apiary, CalendarEvent } from '../types';
 import Modal from './Modal';
-import { MailIcon, GoogleIcon, CheckCircleIcon, XCircleIcon } from './Icons';
+import { MailIcon, GoogleIcon, CheckCircleIcon, XCircleIcon, SparklesIcon } from './Icons';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Capacitor } from '@capacitor/core';
 import { logger } from '../services/logger';
@@ -25,6 +25,8 @@ const CalendarEventModal: React.FC<CalendarEventModalProps> = ({ isOpen, onClose
     const [selectedApiaryId, setSelectedApiaryId] = useState<string>('');
     const [selectedHiveIds, setSelectedHiveIds] = useState<Set<string>>(new Set());
     const [emailReminder, setEmailReminder] = useState(false);
+    const [reminderMinutes, setReminderMinutes] = useState(0);
+    const [useGoogleCalendar, setUseGoogleCalendar] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -38,6 +40,12 @@ const CalendarEventModal: React.FC<CalendarEventModalProps> = ({ isOpen, onClose
 
     useEffect(() => {
         if (isOpen) {
+            setShowConfirmation(false);
+            setPendingEvent(null);
+            setToastMessage(null);
+            setIsSaving(false);
+            setError(null);
+            
             if (eventToEdit) {
                 setTitle(eventToEdit.title);
                 setDescription(eventToEdit.description);
@@ -47,6 +55,8 @@ const CalendarEventModal: React.FC<CalendarEventModalProps> = ({ isOpen, onClose
                 const hiveIds = eventToEdit.hiveList?.map(h => h.id) || [];
                 setSelectedHiveIds(new Set(hiveIds));
                 setEmailReminder(eventToEdit.emailReminder || false);
+                setReminderMinutes(eventToEdit.reminderMinutes || 0);
+                setUseGoogleCalendar(eventToEdit.useGoogleCalendar || false);
             } else {
                 setTitle('');
                 setDescription('');
@@ -54,6 +64,8 @@ const CalendarEventModal: React.FC<CalendarEventModalProps> = ({ isOpen, onClose
                 // Imposta l'ora corrente al momento dell'apertura
                 setTime(new Date().toTimeString().slice(0, 5));
                 setEmailReminder(false);
+                setReminderMinutes(0);
+                setUseGoogleCalendar(false);
                 
                 if (initialApiaryId) {
                     setSelectedApiaryId(initialApiaryId);
@@ -128,23 +140,54 @@ const CalendarEventModal: React.FC<CalendarEventModalProps> = ({ isOpen, onClose
 
             // Schedule Local Notification
             if (Capacitor.isNativePlatform()) {
-                const scheduleDate = new Date(`${event.startDate}T${event.startTime}`);
-                const notifId = event.notificationId || Math.floor(Math.random() * 2147483647);
-                
-                // Cancella eventuale notifica precedente se esiste
-                try { await LocalNotifications.cancel({ notifications: [{ id: notifId }] }); } catch (e) {}
+                try {
+                    const [year, month, day] = event.startDate.split('-').map(Number);
+                    const [hour, minute] = event.startTime.split(':').map(Number);
+                    let scheduleDate = new Date(year, month - 1, day, hour, minute);
+                    
+                    // Applica l'anticipo del promemoria locale se impostato
+                    if (event.reminderMinutes && event.reminderMinutes > 0) {
+                        scheduleDate = new Date(scheduleDate.getTime() - event.reminderMinutes * 60 * 1000);
+                    }
 
-                if (scheduleDate > new Date()) {
-                    await LocalNotifications.schedule({
-                        notifications: [{
-                            title: `🐝 ${event.title}`,
-                            body: event.description || `Attività in apiario: ${event.apiaryName}`,
-                            id: notifId,
-                            schedule: { at: scheduleDate },
-                            smallIcon: 'ic_stat_icon_config_sample',
-                        }]
-                    });
-                    logger.log(`Notifica locale programmata per: ${scheduleDate.toLocaleString()}`);
+                    const notifId = event.notificationId || Math.floor(Math.random() * 2147483647);
+                    
+                    // Cancella eventuale notifica precedente se esiste
+                    try { await LocalNotifications.cancel({ notifications: [{ id: notifId }] }); } catch (e) {}
+
+                    if (scheduleDate > new Date()) {
+                        // Richiedi permessi se necessario
+                        const permStatus = await LocalNotifications.checkPermissions();
+                        if (permStatus.display !== 'granted') {
+                            await LocalNotifications.requestPermissions();
+                        }
+
+                        await LocalNotifications.createChannel({
+                            id: 'apiary-reminders',
+                            name: 'Promemoria Apiario',
+                            description: 'Notifiche per gli eventi e le fioriture',
+                            importance: 5,
+                            vibration: true
+                        });
+
+                        const bodyPrefix = event.reminderMinutes && event.reminderMinutes > 0 ? `Tra ${event.reminderMinutes} min: ` : '';
+
+                        await LocalNotifications.schedule({
+                            notifications: [{
+                                title: `🐝 ${event.title}`,
+                                body: `${bodyPrefix}${event.description || `Attività in apiario: ${event.apiaryName}`}`,
+                                id: notifId,
+                                channelId: 'apiary-reminders',
+                                schedule: { at: scheduleDate, allowWhileIdle: true }
+                            }]
+                        });
+                        logger.log(`Notifica locale programmata per: ${scheduleDate.toLocaleString()}`);
+                    } else {
+                        logger.log(`Data nel passato (considerando eventuale anticipo), notifica non programmata: ${scheduleDate.toLocaleString()}`);
+                    }
+                } catch (notifError: any) {
+                    logger.log("Errore programmazione notifica: " + notifError.message, "error");
+                    // Non blocchiamo la chiusura del modale se fallisce la notifica
                 }
             }
             
@@ -181,19 +224,20 @@ const CalendarEventModal: React.FC<CalendarEventModalProps> = ({ isOpen, onClose
                 apiaryName: selectedApiary?.name || 'Sconosciuto',
                 hiveList: selectedHivesList,
                 notificationId: notificationId,
-                emailReminder: emailReminder
+                emailReminder: emailReminder,
+                reminderMinutes: reminderMinutes,
+                useGoogleCalendar: useGoogleCalendar
             };
 
-            // SE NUOVO EVENTO: Apri Google Calendar e mostra conferma UI
-            if (!eventToEdit) {
+            // SE NUOVO EVENTO e Google Calendar è attivo: Apri GCal e mostra conferma UI
+            if (!eventToEdit && useGoogleCalendar) {
                 connectToGoogleCalendar(newEvent);
                 setPendingEvent(newEvent);
                 setShowConfirmation(true);
-                // Non chiudiamo ancora, aspettiamo la conferma UI
                 return; 
             }
 
-            // SE MODIFICA: Salva direttamente
+            // SE MODIFICA o GCal disattivato: Salva direttamente
             await finalizeSave(newEvent);
 
         } catch (err: any) {
@@ -243,7 +287,7 @@ const CalendarEventModal: React.FC<CalendarEventModalProps> = ({ isOpen, onClose
                     <div className="flex gap-4 w-full px-4 pt-2">
                         <button
                             onClick={handleConfirmNo}
-                            className="flex-1 px-4 py-3 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl font-bold text-sm hover:bg-slate-200 dark:hover:bg-slate-600 transition"
+                            className="flex-1 px-4 py-3 bg-slate-500 text-white rounded-xl font-bold text-sm hover:bg-slate-600 transition"
                         >
                             No, Annulla
                         </button>
@@ -332,27 +376,77 @@ const CalendarEventModal: React.FC<CalendarEventModalProps> = ({ isOpen, onClose
                         <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Dettagli attività..." className="w-full p-2 border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-700 dark:text-white" rows={2}></textarea>
                     </div>
 
-                    <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/50 rounded border border-slate-200 dark:border-slate-700">
-                        <label htmlFor="emailReminder" className="text-sm font-medium text-slate-700 dark:text-slate-300 flex items-center gap-2 cursor-pointer select-none">
-                            <MailIcon className="w-4 h-4 text-blue-500" />
-                            Promemoria via Email
-                        </label>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                            <input 
-                                type="checkbox" 
-                                id="emailReminder" 
-                                checked={emailReminder} 
-                                onChange={(e) => setEmailReminder(e.target.checked)} 
-                                className="sr-only peer"
-                            />
-                            <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-slate-600 peer-checked:bg-blue-600"></div>
-                        </label>
+                    <div className="space-y-3 p-3 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-700">
+                        <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2">
+                            <SparklesIcon className="w-3 h-3" />
+                            Notifiche e Sincronizzazione
+                        </h4>
+                        
+                        {/* Local Reminder Minutes */}
+                        <div className="flex flex-col gap-2">
+                            <label className="text-sm font-medium text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                                <span>Promemoria Notifica (minuti prima)</span>
+                                <select 
+                                    value={reminderMinutes} 
+                                    onChange={(e) => setReminderMinutes(parseInt(e.target.value))}
+                                    className="p-1 text-xs border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-700 font-bold"
+                                >
+                                    <option value={0}>Al momento esatto</option>
+                                    <option value={5}>5 minuti prima</option>
+                                    <option value={10}>10 minuti prima</option>
+                                    <option value={15}>15 minuti prima</option>
+                                    <option value={30}>30 minuti prima</option>
+                                    <option value={60}>1 ora prima</option>
+                                </select>
+                            </label>
+                            <p className="text-[10px] text-slate-500">Imposta quando vuoi ricevere la notifica sul tuo dispositivo.</p>
+                        </div>
+
+                        <hr className="border-slate-200 dark:border-slate-700" />
+
+                        {/* Email Reminder Toggle */}
+                        <div className="flex items-center justify-between">
+                            <label htmlFor="emailReminder" className="text-sm font-medium text-slate-700 dark:text-slate-300 flex items-center gap-2 cursor-pointer select-none">
+                                <MailIcon className="w-4 h-4 text-blue-500" />
+                                Promemoria via Email
+                            </label>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input 
+                                    type="checkbox" 
+                                    id="emailReminder" 
+                                    checked={emailReminder} 
+                                    onChange={(e) => setEmailReminder(e.target.checked)} 
+                                    className="sr-only peer"
+                                />
+                                <div className="w-10 h-5 bg-slate-200 rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-slate-600 peer-checked:bg-blue-600"></div>
+                            </label>
+                        </div>
+
+                        <hr className="border-slate-200 dark:border-slate-700" />
+
+                        {/* Google Calendar Toggle */}
+                        <div className="flex items-center justify-between">
+                            <label htmlFor="useGoogleCalendar" className="text-sm font-medium text-slate-700 dark:text-slate-300 flex items-center gap-2 cursor-pointer select-none">
+                                <GoogleIcon className="w-4 h-4" />
+                                Sincronizza con Google Calendar
+                            </label>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input 
+                                    type="checkbox" 
+                                    id="useGoogleCalendar" 
+                                    checked={useGoogleCalendar} 
+                                    onChange={(e) => setUseGoogleCalendar(e.target.checked)} 
+                                    className="sr-only peer"
+                                />
+                                <div className="w-10 h-5 bg-slate-200 rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-slate-600 peer-checked:bg-amber-500"></div>
+                            </label>
+                        </div>
                     </div>
                     
                     {error && <p className="text-red-500 text-xs font-medium bg-red-50 p-2 rounded">{error}</p>}
                     
                     <div className="flex justify-end gap-3 pt-4 border-t border-slate-200 dark:border-slate-700 mt-4">
-                        <button type="button" onClick={onClose} className="px-4 py-2 bg-slate-200 dark:bg-slate-600 text-slate-800 dark:text-slate-100 rounded-md hover:bg-slate-300">Annulla</button>
+                        <button type="button" onClick={onClose} className="px-4 py-2 bg-slate-500 text-white rounded-md hover:bg-slate-600">Annulla</button>
                         <button type="submit" disabled={isSaving} className="px-4 py-2 bg-amber-500 text-white font-bold rounded-md hover:bg-amber-600 transition disabled:opacity-50">
                             {isSaving ? 'Attendere...' : 'Salva Evento'}
                         </button>

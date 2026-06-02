@@ -6,7 +6,7 @@ import { TrashIcon, EditIcon, MoreVerticalIcon } from './Icons';
 interface ApiaryCardProps {
     apiary: Apiary;
     onSelect: (apiary: Apiary) => void;
-    onDelete: () => void;
+    onDelete?: () => void;
     onEdit: (e: React.MouseEvent) => void;
 }
 
@@ -29,47 +29,67 @@ const ApiaryCard: React.FC<ApiaryCardProps> = ({ apiary, onSelect, onDelete, onE
         setIsMenuOpen(!isMenuOpen);
     };
 
+    const activeHiveCount = (apiary.hives || []).filter(h => !h._deleted).length;
+
     return (
         <div 
             onClick={() => onSelect(apiary)}
             className="group relative bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-100 dark:border-slate-700 hover:shadow-md transition-all duration-300 cursor-pointer overflow-visible"
         >
-            {/* Menu Button */}
-            <div className="absolute top-2 right-2 z-10" ref={menuRef}>
-                <button 
-                    onClick={toggleMenu}
-                    className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-full hover:bg-slate-100 dark:hover:bg-slate-700 transition"
-                >
-                    <MoreVerticalIcon className="w-5 h-5"/>
-                </button>
+            {/* Warning triangle for missing location */}
+            {(apiary.pendingLocationSync || (!apiary.latitude && !apiary.longitude)) && (
+                <div className="absolute top-2 left-2 z-10 flex items-center gap-1 bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 px-2 py-1 rounded-full border border-red-100 dark:border-red-800 animate-pulse">
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                        <line x1="12" y1="9" x2="12" y2="13" />
+                        <line x1="12" y1="17" x2="12.01" y2="17" />
+                    </svg>
+                    <span className="text-[10px] font-bold uppercase tracking-tight">Posizione non impostata</span>
+                </div>
+            )}
 
-                {/* Dropdown Menu */}
-                {isMenuOpen && (
-                    <div className="absolute right-0 mt-1 w-32 bg-white dark:bg-slate-700 rounded-lg shadow-xl border border-slate-100 dark:border-slate-600 z-50 overflow-hidden animate-fade-in">
-                        <button 
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                setIsMenuOpen(false);
-                                onEdit(e);
-                            }}
-                            className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600 flex items-center gap-2"
-                        >
-                            <EditIcon className="w-4 h-4"/> Modifica
-                        </button>
-                        <div className="h-px bg-slate-100 dark:bg-slate-600"></div>
-                        <button 
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                setIsMenuOpen(false);
-                                onDelete();
-                            }}
-                            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center gap-2"
-                        >
-                            <TrashIcon className="w-4 h-4"/> Elimina
-                        </button>
-                    </div>
-                )}
-            </div>
+            {/* Menu Button */}
+            {(onDelete || true) && ( // Always show menu if edit exists, or just check if any action exists
+                <div className="absolute top-2 right-2 z-10" ref={menuRef}>
+                    <button 
+                        onClick={toggleMenu}
+                        className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-full hover:bg-slate-100 dark:hover:bg-slate-700 transition"
+                    >
+                        <MoreVerticalIcon className="w-5 h-5"/>
+                    </button>
+
+                    {/* Dropdown Menu */}
+                    {isMenuOpen && (
+                        <div className="absolute right-0 mt-1 w-32 bg-white dark:bg-slate-700 rounded-lg shadow-xl border border-slate-100 dark:border-slate-600 z-50 overflow-hidden animate-fade-in">
+                            <button 
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    setIsMenuOpen(false);
+                                    onEdit(e);
+                                }}
+                                className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600 flex items-center gap-2"
+                            >
+                                <EditIcon className="w-4 h-4"/> Modifica
+                            </button>
+                            {onDelete && (
+                                <>
+                                    <div className="h-px bg-slate-100 dark:bg-slate-600"></div>
+                                    <button 
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            setIsMenuOpen(false);
+                                            onDelete();
+                                        }}
+                                        className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center gap-2"
+                                    >
+                                        <TrashIcon className="w-4 h-4"/> Elimina
+                                    </button>
+                                </>
+                            )}
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* Content */}
             <div className="p-5 pt-8 sm:pt-5">
@@ -83,7 +103,7 @@ const ApiaryCard: React.FC<ApiaryCardProps> = ({ apiary, onSelect, onDelete, onE
                 <div className="flex justify-between text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide">
                     <span>Arnie attive</span>
                     <span className="text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-700 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600">
-                        {apiary.hives?.length || 0}
+                        {activeHiveCount}
                     </span>
                 </div>
             </div>

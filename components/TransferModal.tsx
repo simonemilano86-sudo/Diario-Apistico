@@ -40,8 +40,8 @@ const TransferModal: React.FC<TransferModalProps> = ({ isOpen, onClose, sourceAp
     // Determina l'apiario di partenza effettivo
     const effectiveSourceApiary = sourceApiary || allApiaries.find(a => a.id === selectedSourceId);
     
-    // Filtra i target disponibili (non l'apiario di partenza)
-    const availableTargets = allApiaries.filter(a => a.id !== effectiveSourceApiary?.id);
+    // Filtra i target disponibili (non l'apiario di partenza) e assicura che siano attivi
+    const availableTargets = allApiaries.filter(a => !a._deleted && a.id !== effectiveSourceApiary?.id);
 
     const handleToggleHive = (hiveId: string) => {
         const newSelected = new Set(selectedHiveIds);
@@ -93,8 +93,8 @@ const TransferModal: React.FC<TransferModalProps> = ({ isOpen, onClose, sourceAp
                             className="block w-full pl-3 pr-10 py-2 text-base border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white focus:outline-none focus:ring-amber-500 focus:border-amber-500 sm:text-sm rounded-md"
                         >
                             <option value="">-- Seleziona Partenza --</option>
-                            {allApiaries.map(apiary => (
-                                <option key={apiary.id} value={apiary.id}>{apiary.name} ({apiary.hives.length} arnie)</option>
+                            {allApiaries.filter(a => !a._deleted).map(apiary => (
+                                <option key={apiary.id} value={apiary.id}>{apiary.name} ({apiary.hives.filter(h => !h._deleted).length} arnie)</option>
                             ))}
                         </select>
                     </div>

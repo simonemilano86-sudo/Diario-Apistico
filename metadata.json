@@ -1,11 +1,10 @@
-
 {
-  "name": "Diario apistico ",
-  "description": "finalmente funziona tutto",
+  "name": "BeeWise Smart Scale",
+  "description": "Monitoraggio peso arnie con Lilygo T-A7670E e HX711. Gestione alimentazione batteria e invio dati HTTPS a Supabase.",
   "requestFramePermissions": [
     "microphone",
     "camera",
-    "geolocation",
-    "nfc"
-  ]
+    "geolocation"
+  ],
+  "majorCapabilities": []
 }

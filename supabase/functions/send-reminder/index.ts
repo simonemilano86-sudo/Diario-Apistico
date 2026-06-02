@@ -50,8 +50,9 @@ serve(async (req) => {
 
       for (const event of enabledEvents) {
         // A. Costruiamo la data/ora precisa dell'evento
+        // Aggiungiamo +02:00 per forzare il fuso orario italiano (ora legale)
         const timePart = event.startTime || '09:00';
-        const eventIsoString = `${event.startDate}T${timePart}:00`;
+        const eventIsoString = `${event.startDate}T${timePart}:00+02:00`;
         const eventDate = new Date(eventIsoString);
 
         // B. Calcolo differenza temporale in MINUTI
@@ -102,7 +103,7 @@ serve(async (req) => {
             'Authorization': `Bearer ${RESEND_API_KEY}`
           },
           body: JSON.stringify({
-            from: 'onboarding@resend.dev',
+            from: 'info@diarioapistico.com',
             to: user.email, 
             subject: `🐝 Sta iniziando: ${event.title}`,
             html: `
