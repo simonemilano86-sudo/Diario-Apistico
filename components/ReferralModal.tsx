@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Modal from './Modal';
 import { SparklesIcon, CheckCircleIcon } from './Icons';
 import { getReferralStats } from '../services/db';
+import { supabase } from '../services/supabase';
 
 interface ReferralModalProps {
     isOpen: boolean;
@@ -16,19 +17,32 @@ const ReferralModal: React.FC<ReferralModalProps> = ({ isOpen, onClose, userId }
         rewardedCount: 0,
     });
     const [loadingStats, setLoadingStats] = useState(false);
+    const [resolvedUserId, setResolvedUserId] = useState<string | null>(userId || null);
 
-    const referralLink = userId 
-        ? `https://app.diarioapistico.com/?ref=${userId}` 
+    useEffect(() => {
+        if (userId) {
+            setResolvedUserId(userId);
+        } else if (isOpen) {
+            supabase.auth.getSession().then(({ data: { session } }) => {
+                if (session?.user?.id) {
+                    setResolvedUserId(session.user.id);
+                }
+            });
+        }
+    }, [userId, isOpen]);
+
+    const referralLink = resolvedUserId 
+        ? `https://app.diarioapistico.com/?ref=${resolvedUserId}` 
         : 'https://app.diarioapistico.com';
 
     useEffect(() => {
-        if (isOpen && userId) {
+        if (isOpen && resolvedUserId) {
             setLoadingStats(true);
-            getReferralStats(userId)
+            getReferralStats(resolvedUserId)
                 .then(setStats)
                 .finally(() => setLoadingStats(false));
         }
-    }, [isOpen, userId]);
+    }, [isOpen, resolvedUserId]);
 
     const handleCopy = () => {
         navigator.clipboard.writeText(referralLink);

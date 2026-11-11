@@ -1862,7 +1862,7 @@ const App: React.FC = () => {
         }} 
       />
       <PremiumGiftModal isOpen={isPremiumGiftModalOpen} onClose={() => setIsPremiumGiftModalOpen(false)} />
-      <ReferralModal isOpen={isReferralModalOpen} onClose={() => setIsReferralModalOpen(false)} userId={user?.id} />
+      <ReferralModal isOpen={isReferralModalOpen} onClose={() => setIsReferralModalOpen(false)} userId={currentUserId || (user as any)?.id} />
       <MultiAccessModal 
         isOpen={isMultiAccessModalOpen} 
         onClose={() => setIsMultiAccessModalOpen(false)} 
