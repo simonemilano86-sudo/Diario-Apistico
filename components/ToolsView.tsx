@@ -221,13 +221,21 @@ const ToolsView: React.FC<ToolsViewProps> = ({ apiaries, onBack, notes, onSaveNo
 
              if (notifyDate > new Date()) {
                  try {
+                     await LocalNotifications.createChannel({
+                         id: 'apiary-reminders',
+                         name: 'Promemoria Apiario',
+                         description: 'Notifiche per gli eventi e le fioriture',
+                         importance: 5,
+                         vibration: true
+                     });
+
                      await LocalNotifications.schedule({
                          notifications: [{
                              title: `🌱 Preparati per la fioritura: ${newBloomPlant}`,
                              body: `L'anno scorso la fioritura è iniziata tra circa ${newBloomDaysBefore} giorni.`,
                              id: notificationId,
-                             schedule: { at: notifyDate },
-                             smallIcon: 'ic_stat_icon_config_sample',
+                             channelId: 'apiary-reminders',
+                             schedule: { at: notifyDate, allowWhileIdle: true }
                          }]
                      });
                      logger.log(`Notifica fioritura programmata per ${notifyDate.toLocaleString()}`);
@@ -589,8 +597,7 @@ const ToolsView: React.FC<ToolsViewProps> = ({ apiaries, onBack, notes, onSaveNo
                     setBloomToEdit(null);
                     setIsBloomModalOpen(true);
                 }}
-                disabled={!isAnyApiarySelected}
-                className={`fixed right-6 w-14 h-14 bg-emerald-600 text-white rounded-full shadow-lg flex items-center justify-center hover:bg-emerald-700 transition-all duration-300 z-50 disabled:opacity-50 disabled:cursor-not-allowed ${isScrolling ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
+                className={`fixed right-6 w-14 h-14 bg-emerald-600 text-white rounded-full shadow-lg flex items-center justify-center hover:bg-emerald-700 transition-all duration-300 z-50 ${!isAnyApiarySelected ? 'opacity-50' : 'opacity-100'} ${isScrolling ? 'opacity-0 pointer-events-none' : ''}`}
                 title="Aggiungi Fioritura"
                 style={{ bottom: 'calc(6rem + env(safe-area-inset-bottom))' }}
             >
@@ -710,7 +717,7 @@ const ToolsView: React.FC<ToolsViewProps> = ({ apiaries, onBack, notes, onSaveNo
                     </div>
 
                     <div className="flex justify-end gap-3 pt-2">
-                        <button onClick={() => setIsBloomModalOpen(false)} className="px-4 py-2 bg-slate-200 dark:bg-slate-600 rounded-md text-sm font-medium">Annulla</button>
+                        <button onClick={() => setIsBloomModalOpen(false)} className="px-4 py-2 bg-slate-500 text-white rounded-md text-sm font-medium hover:bg-slate-600">Annulla</button>
                         <button 
                             onClick={handleSaveBloom} 
                             disabled={!newBloomPlant || !newBloomStart || selectedApiaryIds.size === 0}
@@ -733,7 +740,7 @@ const ToolsView: React.FC<ToolsViewProps> = ({ apiaries, onBack, notes, onSaveNo
                         Sei sicuro di voler eliminare questa fioritura?
                     </p>
                     <div className="flex justify-end gap-4 pt-4">
-                        <button onClick={() => setBloomToDelete(null)} className="px-4 py-2 bg-slate-200 dark:bg-slate-600 rounded-md">Annulla</button>
+                        <button onClick={() => setBloomToDelete(null)} className="px-4 py-2 bg-slate-500 text-white rounded-md hover:bg-slate-600">Annulla</button>
                         <button onClick={confirmDeleteBloom} className="px-4 py-2 bg-red-600 text-white rounded-md">Elimina</button>
                     </div>
                 </div>

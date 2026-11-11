@@ -1,8 +1,8 @@
 apply plugin: 'com.android.application'
 
 android {
-    namespace "com.beewise.diario"
-    compileSdkVersion rootProject.ext.compileSdkVersion
+    namespace = "com.beewise.diario"
+    compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
         applicationId "com.beewise.diario"
         minSdkVersion rootProject.ext.minSdkVersion
@@ -11,8 +11,9 @@ android {
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
-             // Files and dirs to omit from the packaged assets
-             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
     buildTypes {
@@ -32,13 +33,13 @@ repositories {
 dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
-
-    // Dipendenze per i test (necessarie per evitare errori di compilazione)
-    testImplementation "junit:junit:4.13.2"
-    androidTestImplementation "androidx.test.ext:junit:1.1.5"
-    androidTestImplementation "androidx.test.espresso:espresso-core:3.5.1"
 }
 
 apply from: 'capacitor.build.gradle'
@@ -48,18 +49,6 @@ try {
     if (servicesJSON.text) {
         apply plugin: 'com.google.gms.google-services'
     }
-} catch (Exception e) {
+} catch(Exception e) {
     logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
-}
-
-// --- FIX PER ERRORI "DUPLICATE CLASS" KOTLIN ---
-// Questo blocco forza Gradle ad usare una singola versione di Kotlin per tutte le librerie
-// --- FIX PER ERRORI "DUPLICATE CLASS" KOTLIN ---
-// Questo blocco forza Gradle ad usare una singola versione di Kotlin per tutte le librerie
-configurations.all {
-    resolutionStrategy {
-        force "org.jetbrains.kotlin:kotlin-stdlib:1.9.10"
-        force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.10"
-        force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.10"
-    }
 }

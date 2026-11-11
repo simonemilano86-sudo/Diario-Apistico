@@ -4,6 +4,9 @@ import { logger } from '../services/logger';
 import Modal from './Modal';
 import { MailIcon, BackArrowIcon, EyeIcon, EyeOffIcon } from './Icons';
 
+import { Capacitor } from '@capacitor/core';
+import { resetPasswordRecoveryFlow } from '../App';
+
 interface AuthModalProps {
     isOpen: boolean;
     onClose: () => void;
@@ -12,6 +15,7 @@ interface AuthModalProps {
 
 const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, defaultMode = 'signin' }) => {
     const [mode, setMode] = useState<'signin' | 'signup' | 'recovery' | 'update_password'>(defaultMode);
+    const [fullName, setFullName] = useState('');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [showPassword, setShowPassword] = useState(false);
@@ -30,6 +34,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, defaultMode = 's
     useEffect(() => {
         if (isOpen) {
             setMode(defaultMode);
+            setFullName('');
             setEmail('');
             setPassword('');
             setShowPassword(false);
@@ -40,6 +45,22 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, defaultMode = 's
         }
     }, [isOpen, defaultMode]);
 
+    useEffect(() => {
+        // Ascolta gli eventi di autenticazione per intercettare il recupero password
+        const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+            if (event === 'PASSWORD_RECOVERY') {
+                // L'utente ha cliccato sul link di recupero ed è stato autenticato temporaneamente
+                setMode('update_password');
+                setError(null);
+                setSuccessMessage(null);
+            }
+        });
+
+        return () => {
+            authListener.subscription.unsubscribe();
+        };
+    }, []);
+
     const handleEmailAuth = async (e: React.FormEvent) => {
         e.preventDefault();
         setLoading(true);
@@ -48,16 +69,38 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, defaultMode = 's
 
         try {
             if (mode === 'signup') {
-                const { error } = await supabase.auth.signUp({
+                const redirectUrl = Capacitor.isNativePlatform() 
+                    ? 'com.beewise.diario://auth/callback' 
+                    : window.location.origin;
+                    
+                const { data, error } = await supabase.auth.signUp({
                     email,
                     password,
-                    options: { emailRedirectTo: 'com.beewise.diario://auth/callback' }
+                    options: { 
+                        data: { full_name: fullName },
+                        emailRedirectTo: redirectUrl
+                    }
                 });
-                if (error) throw error;
+                
+                // Gestione specifica dell'errore di rate limit di Supabase
+                if (error) {
+                    if (error.message.includes('rate_limit') || error.message.includes('Too many requests') || error.status === 429) {
+                        throw new Error("Hai fatto troppi tentativi. Attendi 60 secondi prima di riprovare.");
+                    }
+                    throw error;
+                }
+
+                // Supabase "Email Enumeration Protection": l'utente esiste già
+                if (data?.user && data.user.identities && data.user.identities.length === 0) {
+                    throw new Error("Questa email è già registrata. Prova ad accedere o recupera la password.");
+                }
+                
                 if (isMounted.current) {
                     setSuccessMessage("Registrazione avvenuta! Controlla l'email per confermare.");
+                    setFullName(''); // Svuota campo nome utente
                     setEmail(''); // Svuota campo email
                     setPassword(''); // Svuota campo password
+                    setMode('signin'); // Passa alla modalità Accedi
                 }
             } else if (mode === 'signin') {
                 const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -78,7 +121,9 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, defaultMode = 's
         setLoading(true);
         setError(null);
         try {
-            if (typeof window !== 'undefined') localStorage.setItem('beewise_recovery_pending', 'true');
+            if (typeof window !== 'undefined') {
+                localStorage.setItem('beewise_recovery_pending', 'true');
+            }
             const { error } = await supabase.auth.resetPasswordForEmail(email, {
                 redirectTo: 'com.beewise.diario://auth/callback'
             });
@@ -88,8 +133,10 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, defaultMode = 's
                 setEmail('');
             }
         } catch (err: any) {
+            if (typeof window !== 'undefined') {
+                localStorage.removeItem('beewise_recovery_pending');
+            }
             if (isMounted.current) setError(err.message || "Errore");
-            localStorage.removeItem('beewise_recovery_pending');
         } finally {
             if (isMounted.current) setLoading(false);
         }
@@ -127,10 +174,22 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, defaultMode = 's
             logger.log("Password aggiornata con successo.");
             
             if (isMounted.current) {
-                setSuccessMessage("Password salvata correttamente!");
-                localStorage.removeItem('beewise_recovery_pending');
+                setSuccessMessage("Password salvata! Ora effettua l'accesso.");
+                if (typeof window !== 'undefined') {
+                    localStorage.removeItem('beewise_recovery_pending');
+                }
+                resetPasswordRecoveryFlow();
                 setPassword('');
-                setTimeout(() => { if (isMounted.current) onClose(); }, 2000);
+                
+                // Disconnetti l'utente per forzarlo a fare il login con la nuova password
+                await supabase.auth.signOut();
+                
+                setTimeout(() => { 
+                    if (isMounted.current) {
+                        setMode('signin');
+                        setSuccessMessage(null);
+                    } 
+                }, 2500);
             }
 
         } catch (err: any) {
@@ -145,6 +204,19 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, defaultMode = 's
         }
     };
 
+    const handleModalClose = async () => {
+        // Se l'utente chiude il modale mentre è in modalità recupero password,
+        // lo scolleghiamo per sicurezza (dato che il link lo aveva loggato temporaneamente)
+        if (mode === 'update_password') {
+            if (typeof window !== 'undefined') {
+                localStorage.removeItem('beewise_recovery_pending');
+            }
+            resetPasswordRecoveryFlow();
+            await supabase.auth.signOut();
+        }
+        onClose();
+    };
+
     const getTitle = () => {
         switch (mode) {
             case 'signin': return "Accedi";
@@ -155,7 +227,13 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, defaultMode = 's
     };
 
     return (
-        <Modal isOpen={isOpen} onClose={onClose} title={getTitle()}>
+        <Modal 
+            isOpen={isOpen} 
+            onClose={handleModalClose} 
+            title={getTitle()}
+            disableBackdropClick={mode === 'update_password'}
+            hideCloseButton={mode === 'update_password'}
+        >
             <div className="space-y-6">
                 {(mode === 'signin' || mode === 'signup') && (
                     <div className="flex border-b border-slate-200 dark:border-slate-700">
@@ -186,6 +264,14 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, defaultMode = 's
                         <button type="submit" disabled={loading} className="w-full py-2 bg-green-600 text-white rounded-md font-medium disabled:bg-slate-400">
                             {loading ? (loadingStep || 'Salvataggio...') : 'Salva Nuova Password'}
                         </button>
+                        <button 
+                            type="button" 
+                            onClick={handleModalClose} 
+                            disabled={loading}
+                            className="w-full py-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-md font-medium hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors"
+                        >
+                            Annulla
+                        </button>
                     </form>
                 ) : mode === 'recovery' ? (
                     <form onSubmit={handlePasswordReset} className="space-y-4">
@@ -195,6 +281,16 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, defaultMode = 's
                     </form>
                 ) : (
                     <form onSubmit={handleEmailAuth} className="space-y-4">
+                        {mode === 'signup' && (
+                            <input 
+                                type="text" 
+                                value={fullName} 
+                                onChange={(e) => setFullName(e.target.value)} 
+                                placeholder="Nome Utente" 
+                                className="w-full p-2 border rounded-md dark:bg-slate-700 dark:text-white" 
+                                required 
+                            />
+                        )}
                         <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" className="w-full p-2 border rounded-md dark:bg-slate-700 dark:text-white" required />
                         <div className="relative">
                             <input type={showPassword ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" className="w-full p-2 border rounded-md dark:bg-slate-700 dark:text-white" required />

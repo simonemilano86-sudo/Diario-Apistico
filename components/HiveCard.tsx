@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { Hive, HiveStatus } from '../types';
 import { CheckCircleIcon, WarningIcon, TrashIcon, EditIcon, MoreVerticalIcon } from './Icons';
@@ -36,9 +35,10 @@ const HiveCard: React.FC<HiveCardProps> = ({ hive, onSelect, onDelete, onEdit })
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
 
-    // Fallback if hive has an old status that doesn't exist anymore
+    // Fallback se gli array sono undefined
+    const inspections = hive.inspections || [];
     const style = statusStyles[hive.status] || statusStyles[HiveStatus.HEALTHY];
-    const lastInspection = hive.inspections.length > 0 ? hive.inspections.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0] : null;
+    const lastInspection = inspections.length > 0 ? inspections.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0] : null;
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {

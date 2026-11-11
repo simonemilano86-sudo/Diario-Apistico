@@ -9,6 +9,7 @@ interface HiveModalProps {
     onClose: () => void;
     onSave: (hive: Omit<Hive, 'id' | 'inspections'>) => void;
     hiveToEdit: Hive | null;
+    existingHives: Hive[];
 }
 
 const getQueenColor = (year: number): string => {
@@ -23,7 +24,7 @@ const getQueenColor = (year: number): string => {
     }
 };
 
-const HiveModal: React.FC<HiveModalProps> = ({ isOpen, onClose, onSave, hiveToEdit }) => {
+const HiveModal: React.FC<HiveModalProps> = ({ isOpen, onClose, onSave, hiveToEdit, existingHives }) => {
     const currentYear = new Date().getFullYear();
     const yearOptions = Array.from({ length: 6 }, (_, i) => currentYear - i);
     const [hive, setHive] = useState<Omit<Hive, 'id' | 'inspections'>>({
@@ -58,6 +59,10 @@ const HiveModal: React.FC<HiveModalProps> = ({ isOpen, onClose, onSave, hiveToEd
         e.preventDefault();
         if (hive.name.trim() === '') {
             setError("Il nome dell'arnia è obbligatorio.");
+            return;
+        }
+        if (existingHives.some(h => h.name.toLowerCase() === hive.name.trim().toLowerCase() && h.id !== hiveToEdit?.id)) {
+            setError("Esiste già un'arnia con questo nome in questo apiario.");
             return;
         }
         onSave(hive);
@@ -120,7 +125,7 @@ const HiveModal: React.FC<HiveModalProps> = ({ isOpen, onClose, onSave, hiveToEd
                 {renderSelect('queenRace', 'Sottospecie / Razza Regina', hive.queenRace, QueenRace)}
 
                 <div className="flex justify-end gap-4 pt-4">
-                    <button type="button" onClick={onClose} className="px-4 py-2 bg-slate-200 dark:bg-slate-600 text-slate-800 dark:text-slate-100 rounded-md hover:bg-slate-300 dark:hover:bg-slate-500 transition">Annulla</button>
+                    <button type="button" onClick={onClose} className="px-4 py-2 bg-slate-500 text-white rounded-md hover:bg-slate-600 transition">Annulla</button>
                     <button type="submit" className="px-4 py-2 bg-amber-500 text-white rounded-md hover:bg-amber-600 transition">Salva Arnia</button>
                 </div>
             </form>

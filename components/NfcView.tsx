@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { Apiary, Hive } from '../types';
 import { BackArrowIcon, NfcIcon, PlusIcon, SearchIcon, XCircleIcon, TrashIcon } from './Icons';
@@ -20,6 +21,25 @@ const NfcView: React.FC<NfcViewProps> = ({ apiaries, onBack, onOpenConfig, onRem
     const [isSearchVisible, setIsSearchVisible] = useState(false);
     const [hiveToRemoveTag, setHiveToRemoveTag] = useState<{id: string, name: string} | null>(null);
     const [isScanning, setIsScanning] = useState(false);
+
+    // Stop scanning on unmount or when leaving the view
+    React.useEffect(() => {
+        return () => {
+            stopNfcScan();
+        };
+    }, []);
+
+    const stopNfcScan = async () => {
+        try {
+            if (Capacitor.isNativePlatform()) {
+                await (CapacitorNfc as any).removeAllListeners();
+                const stop = (CapacitorNfc as any).stopScan || (CapacitorNfc as any).stopSession || (CapacitorNfc as any).stop || (CapacitorNfc as any).stopScanning;
+                if(stop) await stop.call(CapacitorNfc);
+            }
+        } catch (e) {
+            console.error("Stop NFC error:", e);
+        }
+    };
 
     // Flatten all hives that have an NFC tag
     const taggedHives = apiaries.flatMap(apiary => 
@@ -45,12 +65,20 @@ const NfcView: React.FC<NfcViewProps> = ({ apiaries, onBack, onOpenConfig, onRem
     };
 
     const handleScan = async () => {
-        if (!onTagScanned) return;
+        if (!onTagScanned || isScanning) {
+            if (isScanning) {
+                await stopNfcScan();
+                setIsScanning(false);
+            }
+            return;
+        }
         setIsScanning(true);
         try {
             if (Capacitor.isNativePlatform()) {
-                await CapacitorNfc.removeAllListeners();
-                await CapacitorNfc.addListener('nfcTag', (data: any) => {
+                // Rimuovi eventuali listener residui prima di aggiungerne uno nuovo
+                await (CapacitorNfc as any).removeAllListeners();
+                
+                await CapacitorNfc.addListener('tagDiscovered', (data: any) => {
                     const toHex = (arr: number[]) => arr.map(i => i.toString(16).padStart(2, '0')).join(':').toUpperCase();
                     let tagId = 'unknown';
                     try {
@@ -62,12 +90,12 @@ const NfcView: React.FC<NfcViewProps> = ({ apiaries, onBack, onOpenConfig, onRem
                     onTagScanned(tagId);
                     
                     // Stop
-                    const stop = (CapacitorNfc as any).stopScan || (CapacitorNfc as any).stopSession || (CapacitorNfc as any).stop;
-                    if(stop) stop.call(CapacitorNfc);
+                    stopNfcScan();
                     setIsScanning(false);
                 });
 
-                const start = (CapacitorNfc as any).startScan || (CapacitorNfc as any).scan || (CapacitorNfc as any).startSession || (CapacitorNfc as any).start;
+                const start = (CapacitorNfc as any).startScanning || (CapacitorNfc as any).scan || (CapacitorNfc as any).startSession || (CapacitorNfc as any).start;
+                console.log("DEBUG: Sto per chiamare il metodo NFC in NfcView");
                 if(start) await start.call(CapacitorNfc);
             } else {
                 // Web Mock
@@ -189,7 +217,7 @@ const NfcView: React.FC<NfcViewProps> = ({ apiaries, onBack, onOpenConfig, onRem
                         Sei sicuro di voler rimuovere l'associazione NFC per l'arnia <strong>{hiveToRemoveTag?.name}</strong>?
                     </p>
                     <div className="flex justify-end gap-4 pt-4">
-                        <button onClick={() => setHiveToRemoveTag(null)} className="px-4 py-2 bg-slate-200 dark:bg-slate-600 rounded-md text-slate-800 dark:text-slate-200 hover:bg-slate-300 dark:hover:bg-slate-500">Annulla</button>
+                        <button onClick={() => setHiveToRemoveTag(null)} className="px-4 py-2 bg-slate-500 text-white rounded-md hover:bg-slate-600 transition">Annulla</button>
                         <button onClick={confirmRemoveTag} className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700">Rimuovi</button>
                     </div>
                 </div>

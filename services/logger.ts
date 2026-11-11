@@ -1,5 +1,5 @@
 
-type LogLevel = 'info' | 'error' | 'warn';
+type LogLevel = 'info' | 'error' | 'warn' | 'warning';
 interface LogEntry { timestamp: string; level: LogLevel; message: string; }
 
 class InternalLogger {
@@ -8,7 +8,13 @@ class InternalLogger {
         const entry = { timestamp: new Date().toLocaleTimeString(), level, message };
         this.logs.unshift(entry);
         if (this.logs.length > 50) this.logs.pop();
-        console[level](`[APP_LOG] ${message}`);
+        
+        const consoleMethod = level === 'warning' ? 'warn' : level;
+        if (typeof console[consoleMethod] === 'function') {
+            console[consoleMethod](`[APP_LOG] ${message}`);
+        } else {
+            console.log(`[APP_LOG] [${level}] ${message}`);
+        }
     }
     getLogs() { return this.logs; }
     clear() { this.logs = []; }

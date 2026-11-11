@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Inspection, Temperament } from '../types';
 import Modal from './Modal';
-import { MicrophoneIcon, StopCircleIcon, TrashIcon, ThermometerIcon, ChevronUpIcon, ChevronDownIcon, WarningIcon } from './Icons';
+import { MicrophoneIcon, StopCircleIcon, TrashIcon, ThermometerIcon, ChevronUpIcon, ChevronDownIcon, WarningIcon, UsersIcon } from './Icons';
 import { logger } from '../services/logger';
 import { VoiceRecorder } from 'capacitor-voice-recorder';
 
@@ -32,6 +32,9 @@ const InspectionModal: React.FC<InspectionModalProps> = ({ isOpen, onClose, onSa
         disease: '',
         feeding: '',
         treatment: '',
+        treatmentQuantity: '',
+        treatmentOperator: '',
+        treatmentWithdrawal: '0 giorni',
         honeyStores: undefined,
         temperament: undefined,
         actions: '',
@@ -41,6 +44,7 @@ const InspectionModal: React.FC<InspectionModalProps> = ({ isOpen, onClose, onSa
     };
 
     const [inspection, setInspection] = useState<Omit<Inspection, 'id'>>(initialInspectionState);
+    const [treatmentCustom, setTreatmentCustom] = useState<string>('');
     const [applyActionsToAll, setApplyActionsToAll] = useState(false);
     
     // Audio Recording State
@@ -55,6 +59,54 @@ const InspectionModal: React.FC<InspectionModalProps> = ({ isOpen, onClose, onSa
     // Alert Modal State (per errori/avvisi)
     const [alertMessage, setAlertMessage] = useState<string | null>(null);
     
+    // Operatori State
+    const [savedOperators, setSavedOperators] = useState<string[]>(() => {
+        try { return JSON.parse(localStorage.getItem('beewise:operators') || '[]'); } catch { return []; }
+    });
+    const [favoriteOperator, setFavoriteOperator] = useState<string>(() => {
+        try { return localStorage.getItem('beewise:favoriteOperator') || ''; } catch { return ''; }
+    });
+    const [isOperatorModalOpen, setIsOperatorModalOpen] = useState(false);
+    const [newOperatorName, setNewOperatorName] = useState('');
+
+    const handleAddOperator = () => {
+        const name = newOperatorName.trim();
+        if(!name) return;
+        if(savedOperators.includes(name)) {
+            setNewOperatorName('');
+            return;
+        }
+        
+        const updated = [...savedOperators, name];
+        setSavedOperators(updated);
+        localStorage.setItem('beewise:operators', JSON.stringify(updated));
+        
+        if (updated.length === 1) {
+            setFavoriteOperator(name);
+            localStorage.setItem('beewise:favoriteOperator', name);
+            setInspection(prev => ({ ...prev, treatmentOperator: name }));
+        }
+        setNewOperatorName('');
+    };
+
+    const handleDeleteOperator = (name: string) => {
+        const updated = savedOperators.filter(n => n !== name);
+        setSavedOperators(updated);
+        localStorage.setItem('beewise:operators', JSON.stringify(updated));
+        
+        if (favoriteOperator === name) {
+            const nextFav = updated.length > 0 ? updated[0] : '';
+            setFavoriteOperator(nextFav);
+            localStorage.setItem('beewise:favoriteOperator', nextFav);
+        }
+    };
+
+    const handleSetFavorite = (name: string) => {
+        setFavoriteOperator(name);
+        localStorage.setItem('beewise:favoriteOperator', name);
+        setInspection(prev => ({ ...prev, treatmentOperator: name }));
+    };
+
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const occupiedFramesOptions = Array.from({ length: 10 }, (_, i) => i + 1);
@@ -86,21 +138,30 @@ const InspectionModal: React.FC<InspectionModalProps> = ({ isOpen, onClose, onSa
         "Blocco di Covata", 
         "Calistrip Biox", 
         "Maqs", 
-        "Trattamento con Acidi Naturali", 
-        "Vorromed"
+        "Vorromed",
+        "Altro"
     ];
 
     useEffect(() => {
         if (inspectionToEdit) {
-            setInspection(inspectionToEdit);
+            const isStandardTreatment = !inspectionToEdit.treatment || treatmentOptions.includes(inspectionToEdit.treatment);
+            setInspection({
+                ...inspectionToEdit,
+                treatment: isStandardTreatment ? inspectionToEdit.treatment : 'Altro'
+            });
+            setTreatmentCustom(isStandardTreatment ? '' : (inspectionToEdit.treatment || ''));
             setAudioUrl(inspectionToEdit.audioNote || null);
         } else {
+            const op = favoriteOperator || (savedOperators.length === 1 ? savedOperators[0] : '');
+            
             setInspection({
                 ...initialInspectionState,
                 date: new Date().toISOString().split('T')[0],
                 time: getCurrentTime(),
-                temperature: currentTemperature
+                temperature: currentTemperature,
+                treatmentOperator: op
             });
+            setTreatmentCustom('');
             setAudioUrl(null);
             setAudioBlob(null);
         }
@@ -240,16 +301,41 @@ const InspectionModal: React.FC<InspectionModalProps> = ({ isOpen, onClose, onSa
             finalAudioBase64 = '';
         }
 
+        // Validazione: almeno un campo, nota o audio deve essere presente
+        const hasData = 
+            inspection.sawQueen || 
+            inspection.sawEggs || 
+            inspection.noBrood ||
+            inspection.occupiedFrames !== undefined ||
+            inspection.broodFrames !== undefined ||
+            inspection.diaphragms !== undefined ||
+            (inspection.disease && inspection.disease !== 'Nessuna') ||
+            (inspection.feeding && inspection.feeding !== 'Nessuna') ||
+            (inspection.treatment && inspection.treatment !== 'Nessuno') ||
+            inspection.honeyStores !== undefined ||
+            inspection.temperament !== undefined ||
+            inspection.actions.trim() !== '' ||
+            inspection.notes.trim() !== '' ||
+            (finalAudioBase64 && finalAudioBase64 !== '');
+
+        if (!hasData) {
+            setAlertMessage("Per favore, compila almeno un campo, aggiungi una nota o registra una nota vocale prima di salvare.");
+            return;
+        }
+
         let finalTemp = inspection.temperature;
         if (finalTemp === undefined && currentTemperature !== undefined) {
             finalTemp = Math.round(currentTemperature);
         }
 
+        const finalTreatment = inspection.treatment === 'Altro' ? treatmentCustom : inspection.treatment;
+
         const inspectionData: Inspection = inspectionToEdit
-            ? { ...inspectionToEdit, ...inspection, audioNote: finalAudioBase64, temperature: finalTemp }
+            ? { ...inspectionToEdit, ...inspection, treatment: finalTreatment, audioNote: finalAudioBase64, temperature: finalTemp }
             : { 
                 ...inspection, 
                 id: Date.now().toString(), 
+                treatment: finalTreatment,
                 audioNote: finalAudioBase64,
                 temperature: finalTemp
               };
@@ -335,12 +421,61 @@ const InspectionModal: React.FC<InspectionModalProps> = ({ isOpen, onClose, onSa
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <SelectInput label="Trattamenti" name="treatment" value={inspection.treatment || 'Nessuno'} options={treatmentOptions} />
-                        <SelectInput label="Nutrizione" name="feeding" value={inspection.feeding || 'Nessuna'} options={feedingOptions} />
-                    </div>
+                    <div className="space-y-4">
+                        <div>
+                            <SelectInput label="Trattamenti" name="treatment" value={inspection.treatment || 'Nessuno'} options={treatmentOptions} />
+                            
+                            {inspection.treatment === 'Altro' && (
+                                <div className="mt-2 animate-fade-in">
+                                    <label htmlFor="treatmentCustom" className="block text-xs font-medium text-slate-700 dark:text-slate-300">Specifica Trattamento</label>
+                                    <input 
+                                        type="text" 
+                                        id="treatmentCustom" 
+                                        value={treatmentCustom} 
+                                        onChange={(e) => setTreatmentCustom(e.target.value)} 
+                                        placeholder="es. Acido Formico 60%" 
+                                        className="mt-1 block w-full shadow-sm text-sm border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white rounded-md focus:ring-amber-500 focus:border-amber-500" 
+                                    />
+                                </div>
+                            )}
 
-                    <SelectInput label="Malattia" name="disease" value={inspection.disease || 'Nessuna'} options={diseaseOptions} />
+                            {/* Campi aggiuntivi per i trattamenti (Registro ASL) */}
+                            {inspection.treatment && inspection.treatment !== 'Nessuno' && inspection.treatment !== 'Blocco di Covata' && (
+                                <div className="mt-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-md p-4 space-y-3 animate-fade-in">
+                                    <p className="text-xs font-bold text-amber-800 dark:text-amber-400 uppercase tracking-wider mb-2">Dettagli Registro ASL</p>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        <div>
+                                            <label htmlFor="treatmentQuantity" className="block text-xs font-medium text-amber-900 dark:text-amber-300">Quantità / Dosaggio</label>
+                                            <input type="text" id="treatmentQuantity" name="treatmentQuantity" value={inspection.treatmentQuantity || ''} onChange={handleChange} placeholder="es. 50ml, 2 strisce" className="mt-1 block w-full shadow-sm text-sm border-amber-300 dark:border-amber-700 dark:bg-slate-700 dark:text-white rounded-md focus:ring-amber-500 focus:border-amber-500" />
+                                        </div>
+                                        <div>
+                                            <div className="flex items-center gap-1">
+                                                <label htmlFor="treatmentWithdrawal" className="block text-xs font-medium text-amber-900 dark:text-amber-300">Tempo di Attesa (posa melari)</label>
+                                                <button type="button" onClick={() => setAlertMessage("TEMPI DI ATTESA (Farmaci più comuni in Italia):\n\n- Api Bioxal (Ossalico): 0 giorni\n- Apivar (Amitraz): 0 giorni\n- Apiguard (Timolo): 0 giorni\n- Apilife Var: 0 giorni\n- Formic Pro: 0 giorni\n\n*Nota: 0 giorni significa che non c'è un tempo legale di sospensione, ma è sempre vietato trattare con i melari posati per evitare di inquinare il miele.")} className="text-amber-600 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-300" title="Info Tempi di Attesa">
+                                                    <span className="text-sm">ℹ️</span>
+                                                </button>
+                                            </div>
+                                            <input type="text" id="treatmentWithdrawal" name="treatmentWithdrawal" value={inspection.treatmentWithdrawal || ''} onChange={handleChange} placeholder="es. 0 giorni" className="mt-1 block w-full shadow-sm text-sm border-amber-300 dark:border-amber-700 dark:bg-slate-700 dark:text-white rounded-md focus:ring-amber-500 focus:border-amber-500" />
+                                        </div>
+                                        <div className="sm:col-span-2">
+                                            <div className="flex items-center gap-2">
+                                                <label htmlFor="treatmentOperator" className="block text-xs font-medium text-amber-900 dark:text-amber-300">Operatore</label>
+                                                <button type="button" onClick={() => setIsOperatorModalOpen(true)} className="flex items-center gap-1 text-sky-700 hover:text-sky-900 dark:text-sky-300 dark:hover:text-sky-100 bg-sky-100 hover:bg-sky-200 dark:bg-sky-900/50 dark:hover:bg-sky-800/60 px-2 py-0.5 rounded-full transition-colors" title="Rubrica Operatori">
+                                                    <UsersIcon className="w-3.5 h-3.5" /> <span className="text-xs font-bold">Gestisci</span>
+                                                </button>
+                                            </div>
+                                            <input type="text" id="treatmentOperator" name="treatmentOperator" value={inspection.treatmentOperator || ''} onChange={handleChange} placeholder="Chi ha effettuato il trattamento" className="mt-1 block w-full shadow-sm text-sm border-amber-300 dark:border-amber-700 dark:bg-slate-700 dark:text-white rounded-md focus:ring-amber-500 focus:border-amber-500" />
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <SelectInput label="Nutrizione" name="feeding" value={inspection.feeding || 'Nessuna'} options={feedingOptions} />
+                            <SelectInput label="Malattia" name="disease" value={inspection.disease || 'Nessuna'} options={diseaseOptions} />
+                        </div>
+                    </div>
 
                     <div>
                         <div className="flex justify-between items-start mb-2">
@@ -385,7 +520,7 @@ const InspectionModal: React.FC<InspectionModalProps> = ({ isOpen, onClose, onSa
                     </div>
 
                     <div className="flex justify-end gap-4 pt-4">
-                        <button type="button" onClick={onClose} className="px-4 py-2 bg-slate-200 dark:bg-slate-600 text-slate-800 dark:text-slate-100 rounded-md hover:bg-slate-300">Annulla</button>
+                        <button type="button" onClick={onClose} className="px-4 py-2 bg-slate-500 text-white rounded-md hover:bg-slate-600">Annulla</button>
                         <button type="submit" className="px-4 py-2 bg-amber-500 text-white rounded-md hover:bg-amber-600">Salva Ispezione</button>
                     </div>
                 </form>
@@ -444,6 +579,83 @@ const InspectionModal: React.FC<InspectionModalProps> = ({ isOpen, onClose, onSa
                     >
                         Chiudi
                     </button>
+                </div>
+            </Modal>
+
+            {/* Modal Rubrica Operatori */}
+            <Modal isOpen={isOperatorModalOpen} onClose={() => setIsOperatorModalOpen(false)} title="Rubrica Operatori">
+                <div className="space-y-4">
+                    <p className="text-sm text-slate-600 dark:text-slate-400">
+                        Aggiungi o scegli gli operatori che effettuano i trattamenti.
+                    </p>
+                    <div className="flex gap-2">
+                        <input 
+                            type="text" 
+                            value={newOperatorName} 
+                            onChange={(e) => setNewOperatorName(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddOperator(); } }}
+                            placeholder="Nome operatore..."
+                            className="flex-grow p-2 border border-slate-300 dark:border-slate-600 rounded-lg dark:bg-slate-700 dark:text-white"
+                        />
+                        <button 
+                            type="button" 
+                            onClick={handleAddOperator}
+                            className="px-4 py-2 bg-amber-500 text-white font-bold rounded-lg hover:bg-amber-600 transition"
+                            disabled={!newOperatorName.trim()}
+                        >
+                            Aggiungi
+                        </button>
+                    </div>
+
+                    <div className="mt-4 space-y-2 max-h-60 overflow-y-auto custom-scrollbar">
+                        {savedOperators.length === 0 ? (
+                            <p className="text-sm text-slate-500 italic text-center py-4">Nessun operatore in rubrica.</p>
+                        ) : (
+                            savedOperators.map(op => {
+                                const isFav = favoriteOperator === op || savedOperators.length === 1;
+                                return (
+                                    <div key={op} className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+                                        <div className="flex items-center gap-3">
+                                            {savedOperators.length > 1 && (
+                                                <button 
+                                                    type="button" 
+                                                    onClick={() => handleSetFavorite(op)}
+                                                    className={`text-xl transition-transform hover:scale-110 ${isFav ? 'text-amber-500' : 'text-slate-300 dark:text-slate-600 grayscale hover:grayscale-0'}`}
+                                                    title={isFav ? "Operatore Predefinito" : "Imposta come Predefinito"}
+                                                >
+                                                    ⭐
+                                                </button>
+                                            )}
+                                            {savedOperators.length === 1 && (
+                                                <span className="text-xl text-amber-500" title="Operatore Predefinito">⭐</span>
+                                            )}
+                                            <span className="font-medium text-slate-800 dark:text-slate-200">{op}</span>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <button 
+                                                type="button" 
+                                                onClick={() => {
+                                                    setInspection(prev => ({ ...prev, treatmentOperator: op }));
+                                                    setIsOperatorModalOpen(false);
+                                                }}
+                                                className="px-3 py-1 bg-slate-200 dark:bg-slate-700 text-xs font-bold rounded hover:bg-slate-300 dark:hover:bg-slate-600 transition"
+                                            >
+                                                Usa
+                                            </button>
+                                            <button 
+                                                type="button" 
+                                                onClick={() => handleDeleteOperator(op)}
+                                                className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md transition"
+                                                title="Elimina"
+                                            >
+                                                <TrashIcon className="w-4 h-4" />
+                                            </button>
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        )}
+                    </div>
                 </div>
             </Modal>
         </>

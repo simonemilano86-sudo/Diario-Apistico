@@ -1,11 +1,10 @@
-
 {
   "name": "Diario apistico ",
-  "description": "finalmente funziona tutto",
+  "description": "finalmente funziona tutto\n\n07/05  22:52",
   "requestFramePermissions": [
     "microphone",
     "camera",
-    "geolocation",
-    "nfc"
-  ]
+    "geolocation"
+  ],
+  "majorCapabilities": []
 }

@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { Hive, Inspection, HiveStatus, HiveMovement, QueenRace, ProductionRecord } from '../types';
 import { PlusIcon, BackArrowIcon, EditIcon, TrashIcon, BeehiveIcon, CheckCircleIcon, WarningIcon, ChevronUpIcon, ChevronDownIcon, MicrophoneIcon, CalendarIcon, SearchIcon, XCircleIcon, MoreVerticalIcon } from './Icons';
@@ -37,9 +36,11 @@ interface HiveDetailsProps {
     canEdit?: boolean;
     canAdd?: boolean;
     hasTeamMembers?: boolean;
+    currentUserEmail?: string;
+    currentUserName?: string;
 }
 
-const InspectionCard: React.FC<{inspection: Inspection, index: number, onEdit: (inspection: Inspection) => void, onDelete: (id: string) => void, canEdit: boolean, canDelete: boolean, hasTeamMembers: boolean }> = ({ inspection, index, onEdit, onDelete, canEdit, canDelete, hasTeamMembers }) => {
+const InspectionCard: React.FC<{inspection: Inspection, index: number, onEdit: (inspection: Inspection) => void, onDelete: (id: string) => void, canEdit: boolean, canDelete: boolean, hasTeamMembers: boolean, currentUserEmail?: string, currentUserName?: string }> = ({ inspection, index, onEdit, onDelete, canEdit, canDelete, hasTeamMembers, currentUserEmail, currentUserName }) => {
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
 
@@ -60,6 +61,7 @@ const InspectionCard: React.FC<{inspection: Inspection, index: number, onEdit: (
 
     // Determina se mostrare il nome dell'autore
     const showAuthor = hasTeamMembers && inspection.createdBy;
+    const authorDisplay = (inspection.createdBy === currentUserEmail || inspection.createdBy === currentUserName) && currentUserName ? currentUserName : inspection.createdBy;
 
     return (
         <div className="relative border-b border-slate-200 dark:border-slate-700 pb-2 mb-2 last:border-0 last:mb-0 p-2 -mx-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
@@ -183,7 +185,7 @@ const InspectionCard: React.FC<{inspection: Inspection, index: number, onEdit: (
             
             {/* Audit Info - MOSTRATO SOLO SE CI SONO ALTRI MEMBRI DEL TEAM */}
             {showAuthor && (
-                <p className="text-[9px] text-slate-400 italic mt-1 text-right">Aggiunto da: {inspection.createdBy}</p>
+                <p className="text-[9px] text-slate-400 italic mt-1 text-right">Aggiunto da: {authorDisplay}</p>
             )}
 
             {/* Counter Number - Posizione dinamica: se mostriamo l'autore va sopra (bottom-5), altrimenti in basso (bottom-1) */}
@@ -198,13 +200,18 @@ const HiveDetails: React.FC<HiveDetailsProps> = ({
     hive, onBack, onAddInspection, onAddProduction, onEditHive, onUpdateHive, 
     onDeleteHive, onDeleteInspection, onEditInspection, onDeleteMovement, onEditMovement, 
     onDeleteProduction, onEditProduction, onOpenCalendar, isScrolling,
-    canDelete = true, canEdit = true, canAdd = true, hasTeamMembers = false
+    canDelete = true, canEdit = true, canAdd = true, hasTeamMembers = false, currentUserEmail, currentUserName
 }) => {
+    useEffect(() => {
+        window.scrollTo(0, 0);
+    }, []);
+
     const [filterMonth, setFilterMonth] = useState<string>('');
     const [isFilterVisible, setIsFilterVisible] = useState(false);
     const currentYear = new Date().getFullYear();
 
-    const sortedInspections = [...hive.inspections].sort((a,b) => {
+    // RIGA 207 CORRETTA: Aggiunto || [] per gestire arnie senza ispezioni
+    const sortedInspections = [...(hive.inspections || [])].sort((a,b) => {
         const dateDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
         if (dateDiff !== 0) return dateDiff;
         if (b.time && a.time) return b.time.localeCompare(a.time);
@@ -240,6 +247,10 @@ const HiveDetails: React.FC<HiveDetailsProps> = ({
                     >
                         <BackArrowIcon className="w-6 h-6"/>
                     </button>
+                </div>
+
+                <div className="flex-1 text-center font-bold text-slate-800 dark:text-slate-100 truncate px-2">
+                    {hive.name}
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -399,6 +410,8 @@ const HiveDetails: React.FC<HiveDetailsProps> = ({
                                 canEdit={canEdit}
                                 canDelete={canDelete}
                                 hasTeamMembers={hasTeamMembers}
+                                currentUserEmail={currentUserEmail}
+                                currentUserName={currentUserName}
                             />
                         ))
                     ) : (

@@ -20,7 +20,8 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
     apiaries, initialApiaryId, initialHiveId 
 }) => {
     const [date, setDate] = useState<string>(new Date().toISOString().split('T')[0]);
-    const [honeyType, setHoneyType] = useState<HoneyType | ''>(''); 
+    const [honeyType, setHoneyType] = useState<string>(''); 
+    const [honeyTypeCustom, setHoneyTypeCustom] = useState<string>('');
     const [melariQuantity, setMelariQuantity] = useState<number | undefined>(undefined);
     const [melariNotes, setMelariNotes] = useState<string>('');
     const [pollenGrams, setPollenGrams] = useState<number | undefined>(undefined);
@@ -29,6 +30,10 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
     const [propolisNets, setPropolisNets] = useState<number | undefined>(undefined);
     const [propolisNotes, setPropolisNotes] = useState<string>('');
     const [error, setError] = useState<string | null>(null);
+    const [alertMessage, setAlertMessage] = useState<string | null>(null);
+
+    // Individual hive quantities for bulk entry
+    const [hiveQuantities, setHiveQuantities] = useState<Record<string, number>>({});
 
     // Target Selection State (for global add)
     const [targetApiaryId, setTargetApiaryId] = useState('');
@@ -41,10 +46,43 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
     useEffect(() => {
         if (isOpen) {
             setError(null);
+            setHiveQuantities({});
             // Reset Fields
             if (recordToEdit) {
                 setDate(recordToEdit.date);
-                setHoneyType(recordToEdit.honeyType || '');
+                
+                const rawType = recordToEdit.honeyType || '';
+                let isStandardType = false;
+                let matchedType = '';
+
+                // Try to match by value (case-insensitive)
+                const standardValues = Object.values(HoneyType);
+                const foundValue = standardValues.find(val => val.toLowerCase() === rawType.toLowerCase());
+
+                if (foundValue) {
+                    isStandardType = true;
+                    matchedType = foundValue;
+                } else {
+                    // Try to match by key (case-insensitive)
+                    const standardKeys = Object.keys(HoneyType) as (keyof typeof HoneyType)[];
+                    const foundKey = standardKeys.find(key => key.toLowerCase() === rawType.toLowerCase());
+                    if (foundKey) {
+                        isStandardType = true;
+                        matchedType = HoneyType[foundKey];
+                    }
+                }
+
+                if (isStandardType) {
+                    setHoneyType(matchedType);
+                    setHoneyTypeCustom('');
+                } else if (rawType) {
+                    setHoneyType(HoneyType.ALTRO);
+                    setHoneyTypeCustom(rawType);
+                } else {
+                    setHoneyType('');
+                    setHoneyTypeCustom('');
+                }
+
                 setMelariQuantity(recordToEdit.melariQuantity);
                 setMelariNotes(recordToEdit.melariNotes || '');
                 setPollenGrams(recordToEdit.pollenGrams);
@@ -55,6 +93,7 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
             } else {
                 setDate(new Date().toISOString().split('T')[0]);
                 setHoneyType(''); 
+                setHoneyTypeCustom('');
                 setMelariQuantity(undefined);
                 setMelariNotes('');
                 setPollenGrams(undefined);
@@ -65,10 +104,39 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
             }
 
             // Initialize Context
-            if (initialApiaryId) {
-                setTargetApiaryId(initialApiaryId);
-                if (initialHiveId) {
-                    setTargetHiveIds(new Set([initialHiveId]));
+            let resolvedApiaryId = initialApiaryId || '';
+            let resolvedHiveId = initialHiveId || '';
+
+            if (recordToEdit) {
+                if ((recordToEdit as any).apiaryId) {
+                    resolvedApiaryId = (recordToEdit as any).apiaryId;
+                }
+                if ((recordToEdit as any).hiveId) {
+                    resolvedHiveId = (recordToEdit as any).hiveId;
+                }
+
+                if (!resolvedApiaryId || !resolvedHiveId) {
+                    for (const a of apiaries) {
+                        for (const h of a.hives) {
+                            const hasRecord = h.productionRecords?.some(r => r.id === recordToEdit.id);
+                            if (hasRecord) {
+                                resolvedApiaryId = a.id;
+                                resolvedHiveId = h.id;
+                                break;
+                            }
+                        }
+                        if (resolvedApiaryId && resolvedHiveId) break;
+                    }
+                }
+            }
+
+            if (resolvedApiaryId) {
+                setTargetApiaryId(resolvedApiaryId);
+                if (resolvedHiveId) {
+                    setTargetHiveIds(new Set([resolvedHiveId]));
+                    if (recordToEdit && recordToEdit.melariQuantity !== undefined) {
+                        setHiveQuantities({ [resolvedHiveId]: recordToEdit.melariQuantity });
+                    }
                 } else {
                     setTargetHiveIds(new Set());
                 }
@@ -89,16 +157,55 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
 
     const handleToggleHive = (hiveId: string) => {
         const newSet = new Set(targetHiveIds);
-        if (newSet.has(hiveId)) newSet.delete(hiveId);
-        else newSet.add(hiveId);
+        const newQuantities = { ...hiveQuantities };
+        
+        if (newSet.has(hiveId)) {
+            newSet.delete(hiveId);
+            delete newQuantities[hiveId];
+        } else {
+            newSet.add(hiveId);
+            if (melariQuantity !== undefined) {
+                newQuantities[hiveId] = melariQuantity;
+            }
+        }
         setTargetHiveIds(newSet);
+        setHiveQuantities(newQuantities);
     };
 
     const handleSelectAllHives = () => {
         if (effectiveApiary) {
-             if (targetHiveIds.size === effectiveApiary.hives.length) setTargetHiveIds(new Set());
-             else setTargetHiveIds(new Set(effectiveApiary.hives.map(h => h.id)));
+             if (targetHiveIds.size === effectiveApiary.hives.length) {
+                 setTargetHiveIds(new Set());
+                 setHiveQuantities({});
+             } else {
+                 const allIds = effectiveApiary.hives.map(h => h.id);
+                 setTargetHiveIds(new Set(allIds));
+                 const newQuants: Record<string, number> = {};
+                 allIds.forEach(id => {
+                     if (melariQuantity !== undefined) newQuants[id] = melariQuantity;
+                 });
+                 setHiveQuantities(newQuants);
+             }
         }
+    };
+
+    const updateAllQuantities = (qty: number | undefined) => {
+        setMelariQuantity(qty);
+        if (qty !== undefined) {
+            const newQuants: Record<string, number> = {};
+            targetHiveIds.forEach(id => {
+                newQuants[id] = qty;
+            });
+            setHiveQuantities(newQuants);
+        }
+        setError(null);
+    };
+
+    const updateSingleHiveQuantity = (hiveId: string, qty: number) => {
+        setHiveQuantities(prev => ({
+            ...prev,
+            [hiveId]: qty
+        }));
     };
 
     const incrementPropolis = () => {
@@ -117,26 +224,29 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
         
         // Target Validation
         if (!targetApiaryId) {
-            setError("Devi selezionare un apiario.");
+            setAlertMessage("Devi selezionare un apiario.");
             return;
         }
         if (targetHiveIds.size === 0) {
-            setError("Devi selezionare almeno un'arnia.");
+            setAlertMessage("Devi selezionare almeno un'arnia.");
             return;
         }
 
         // Data Validation
         if (selectedType === 'honey') {
-            if (!honeyType) { setError("Seleziona il tipo di miele."); return; }
-            if (melariQuantity === undefined) { setError("Seleziona la quantità di melari."); return; }
+            if (!honeyType) { setAlertMessage("Selezionare il tipo di miele."); return; }
+            if (honeyType === HoneyType.ALTRO && !honeyTypeCustom) { setAlertMessage("Specifica il tipo di miele."); return; }
+            if (melariQuantity === undefined) { setAlertMessage("Seleziona la quantità di melari."); return; }
         }
-        if (selectedType === 'pollen' && pollenGrams === undefined) { setError("Seleziona la quantità di polline."); return; }
-        if (selectedType === 'propolis' && propolisNets === undefined) { setError("Inserisci il numero di reti di propoli."); return; }
+        if (selectedType === 'pollen' && pollenGrams === undefined) { setAlertMessage("Seleziona la quantità di polline."); return; }
+        if (selectedType === 'propolis' && propolisNets === undefined) { setAlertMessage("Inserisci il numero di reti di propoli."); return; }
+
+        const finalHoneyType = honeyType === HoneyType.ALTRO ? honeyTypeCustom : honeyType;
 
         const newRecord: ProductionRecord = {
             id: recordToEdit ? recordToEdit.id : Date.now().toString(),
             date,
-            honeyType: selectedType === 'honey' ? (honeyType as HoneyType) : undefined,
+            honeyType: selectedType === 'honey' ? finalHoneyType : undefined,
             melariQuantity: selectedType === 'honey' ? melariQuantity : undefined,
             melariNotes: selectedType === 'honey' ? melariNotes : undefined,
             pollenGrams: selectedType === 'pollen' ? pollenGrams : undefined,
@@ -148,7 +258,11 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
         };
 
         // Passa il target esplicito al padre
-        onSave(newRecord, { apiaryId: targetApiaryId, hiveIds: Array.from(targetHiveIds) });
+        onSave(newRecord, { 
+            apiaryId: targetApiaryId, 
+            hiveIds: Array.from(targetHiveIds),
+            hiveQuantities: selectedType === 'honey' ? hiveQuantities : undefined
+        });
         onClose();
     };
 
@@ -176,8 +290,9 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
                 {/* Context Selection (Show only if not pre-set via props) */}
                 {!initialApiaryId && (
                     <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-xl border border-slate-200 dark:border-slate-700 space-y-3">
-                         {/* Mostra la select solo se ci sono più apiari. Se ce n'è uno, è auto-selezionato. */}
-                         {apiaries.length > 1 && (
+                         
+                         {/* SELETTORE APIARIO: Se più di uno, mostra Select. Se uno solo, mostra testo statico. */}
+                         {apiaries.length > 1 ? (
                              <div>
                                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Apiario</label>
                                 <select
@@ -189,15 +304,21 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
                                     {apiaries.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                                 </select>
                             </div>
+                         ) : (
+                             effectiveApiary && (
+                                <div className="border-b border-slate-200 dark:border-slate-700 pb-2 mb-2">
+                                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Apiario</span>
+                                    <p className="text-lg font-bold text-slate-800 dark:text-white">{effectiveApiary.name}</p>
+                                </div>
+                             )
                          )}
                         
+                        {/* GRIGLIA ARNIE: Visibile se un apiario è selezionato (automaticamente o manualmente) */}
                         {targetApiaryId && effectiveApiary && (
                             <div>
                                 <div className="flex justify-between items-center mb-2">
                                     <label className="block text-xs font-bold text-slate-500 uppercase">
-                                        Arnie ({targetHiveIds.size}) 
-                                        {/* Se singolo apiario, mostriamo il nome qui per chiarezza */}
-                                        {apiaries.length === 1 && <span className="ml-1 text-slate-400 font-normal normal-case">in {effectiveApiary.name}</span>}
+                                        Seleziona Arnie ({targetHiveIds.size})
                                     </label>
                                     <button 
                                         type="button" 
@@ -264,23 +385,34 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
                                         <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Tipo di Miele</label>
                                         <select 
                                             value={honeyType} 
-                                            onChange={(e) => { setHoneyType(e.target.value as HoneyType); setError(null); }}
+                                            onChange={(e) => { setHoneyType(e.target.value); setError(null); }}
                                             className="w-full mt-1 p-2 border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-700 dark:text-white text-sm"
                                         >
                                             <option value="">-- Seleziona Tipo --</option>
                                             {Object.values(HoneyType).map(t => <option key={t} value={t}>{t}</option>)}
                                         </select>
+                                        {honeyType === HoneyType.ALTRO && (
+                                            <input 
+                                                type="text" 
+                                                value={honeyTypeCustom} 
+                                                onChange={e => { setHoneyTypeCustom(e.target.value); setError(null); }} 
+                                                placeholder="Specifica il tipo di miele..." 
+                                                className="w-full mt-2 p-2 border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-700 dark:text-white text-sm" 
+                                            />
+                                        )}
                                     </div>
                                 </div>
 
                                 <div>
-                                    <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Quantità (N° Melari)</label>
+                                    <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+                                        {targetHiveIds.size > 1 ? 'Quantità Predefinita (N° Melari)' : 'Quantità (N° Melari)'}
+                                    </label>
                                     <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 mt-1">
                                         {melariOptions.map(opt => (
                                             <button
                                                 key={opt}
                                                 type="button"
-                                                onClick={() => { setMelariQuantity(melariQuantity === opt ? undefined : opt); setError(null); }}
+                                                onClick={() => updateAllQuantities(melariQuantity === opt ? undefined : opt)}
                                                 className={`py-2 px-1 text-sm rounded-md font-medium transition ${
                                                     melariQuantity === opt 
                                                     ? 'bg-amber-500 text-white shadow-sm' 
@@ -292,6 +424,36 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
                                         ))}
                                     </div>
                                 </div>
+
+                                {/* Sezione Personalizzazione Arnie (solo se più di una) */}
+                                {selectedType === 'honey' && targetHiveIds.size > 1 && (
+                                    <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-700">
+                                        <label className="text-xs font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider mb-3 block">
+                                            Personalizza per Arnia
+                                        </label>
+                                        <div className="space-y-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+                                            {Array.from(targetHiveIds).map(hiveId => {
+                                                const hive = effectiveApiary?.hives.find(h => h.id === hiveId);
+                                                if (!hive) return null;
+                                                return (
+                                                    <div key={hiveId} className="flex items-center justify-between bg-white dark:bg-slate-700 p-2 rounded-lg border border-slate-200 dark:border-slate-600">
+                                                        <span className="text-sm font-medium">{hive.name}</span>
+                                                        <select
+                                                            value={hiveQuantities[hiveId] || 0}
+                                                            onChange={(e) => updateSingleHiveQuantity(hiveId, parseFloat(e.target.value))}
+                                                            className="text-xs p-1 border rounded bg-slate-50 dark:bg-slate-800"
+                                                        >
+                                                            <option value="0">0</option>
+                                                            {melariOptions.map(opt => (
+                                                                <option key={opt} value={opt}>{opt}</option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
 
                                 <div>
                                     <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Note Melari</label>
@@ -427,10 +589,25 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
                 </div>
 
                 <div className="flex justify-end gap-4 pt-4 border-t border-slate-200 dark:border-slate-700">
-                    <button type="button" onClick={onClose} className="px-4 py-2 bg-slate-200 dark:bg-slate-600 text-slate-800 dark:text-slate-100 rounded-md hover:bg-slate-300 dark:hover:bg-slate-500 transition">Annulla</button>
+                    <button type="button" onClick={onClose} className="px-4 py-2 bg-slate-500 text-white rounded-md hover:bg-slate-600 transition">Annulla</button>
                     <button type="submit" className="px-6 py-2 bg-amber-600 text-white font-semibold rounded-md hover:bg-amber-700 transition shadow-sm">Salva</button>
                 </div>
             </form>
+
+            <Modal isOpen={!!alertMessage} onClose={() => setAlertMessage(null)} title="Attenzione">
+                <div className="flex flex-col items-center justify-center p-4 text-center">
+                    <WarningIcon className="w-12 h-12 text-red-500 mb-4" />
+                    <p className="text-slate-700 dark:text-slate-300 mb-6 font-medium">
+                        {alertMessage}
+                    </p>
+                    <button 
+                        onClick={() => setAlertMessage(null)}
+                        className="w-full px-6 py-3 bg-amber-500 text-white font-bold rounded-lg hover:bg-amber-600 transition shadow-md"
+                    >
+                        Ho capito
+                    </button>
+                </div>
+            </Modal>
         </Modal>
     );
 };

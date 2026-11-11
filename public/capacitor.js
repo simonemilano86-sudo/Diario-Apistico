@@ -1,0 +1,1 @@
+// Spazio riservato a Capacitor

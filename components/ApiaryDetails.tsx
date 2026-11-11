@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { Apiary, Hive } from '../types';
-import { BackArrowIcon, PlusIcon, BeehiveIcon, MapPinIcon, SearchIcon, XCircleIcon } from './Icons';
+import { BackArrowIcon, PlusIcon, BeehiveIcon, MapPinIcon, SearchIcon, XCircleIcon, ClipboardIcon } from './Icons';
 import HiveCard from './HiveCard';
 import WeatherWidget from './WeatherWidget';
 
@@ -16,6 +16,7 @@ interface ApiaryDetailsProps {
     onEditHive: (hive: Hive) => void;
     onTransferHives: () => void;
     onWeatherUpdate?: (temp: number) => void;
+    onOpenLog: () => void;
     isScrolling?: boolean;
     canDelete?: boolean;
     canEdit?: boolean;
@@ -24,7 +25,7 @@ interface ApiaryDetailsProps {
 
 const ApiaryDetails: React.FC<ApiaryDetailsProps> = ({ 
     apiary, onBack, onSelectHive, onAddHive, onDeleteApiary, onEditApiary, 
-    onDeleteHive, onEditHive, onTransferHives, onWeatherUpdate, isScrolling,
+    onDeleteHive, onEditHive, onTransferHives, onWeatherUpdate, onOpenLog, isScrolling,
     canDelete = true, canEdit = true, canAdd = true
 }) => {
     const [searchQuery, setSearchQuery] = useState('');
@@ -34,11 +35,13 @@ const ApiaryDetails: React.FC<ApiaryDetailsProps> = ({
     const hasCoordinates = apiary.latitude !== undefined && apiary.latitude !== null && 
                            apiary.longitude !== undefined && apiary.longitude !== null;
 
-    // Logica di filtro e ordinamento
+    // Logica di filtro e ordinamento (escludiamo sempre le arnie nel cestino)
     const filteredHives = apiary.hives.filter(h => 
-        h.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-        h.status.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        h.queenRace.toLowerCase().includes(searchQuery.toLowerCase())
+        !h._deleted && (
+            h.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+            h.status.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            h.queenRace.toLowerCase().includes(searchQuery.toLowerCase())
+        )
     ).sort((a, b) => {
         // Ordinamento naturale
         return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
@@ -57,6 +60,13 @@ const ApiaryDetails: React.FC<ApiaryDetailsProps> = ({
                 </button>
                 
                 <div className="flex items-center gap-2">
+                    <button 
+                        onClick={onOpenLog}
+                        className="flex items-center justify-center w-10 h-10 bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-full border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-600 transition shadow-sm"
+                        title="Log Apiario"
+                    >
+                        <ClipboardIcon className="w-5 h-5" />
+                    </button>
                     {apiary.hives.length > 0 && (
                         <>
                             <div className={`flex items-center transition-all duration-300 ${isSearchVisible ? 'w-48 sm:w-64' : 'w-10'}`}>

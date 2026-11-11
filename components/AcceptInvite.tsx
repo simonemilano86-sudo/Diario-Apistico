@@ -11,21 +11,38 @@ const AcceptInvite: React.FC = () => {
     const [message, setMessage] = useState<string>('');
     const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
     
+    const [inviteCodeInput, setInviteCodeInput] = useState('');
+    
     const hasAttemptedRef = useRef(false);
 
     useEffect(() => {
-        // 1. Recupera token dall'URL
+        // 1. Recupera token dall'URL (query param o hash)
         const params = new URLSearchParams(window.location.search);
-        const urlToken = params.get('token');
+        let urlToken = params.get('token');
+        
+        if (!urlToken && window.location.hash) {
+            const hashParams = new URLSearchParams(window.location.hash.split('?')[1]);
+            urlToken = hashParams.get('token');
+        }
+        
+        // Fallback: check localStorage se set da redirect
+        if (!urlToken) {
+            urlToken = localStorage.getItem('pending_invite_token');
+        }
         
         if (urlToken) {
             localStorage.setItem('pending_invite_token', urlToken);
             setToken(urlToken);
-            // Pulisce l'URL senza ricaricare la pagina
-            window.history.replaceState({}, '', window.location.pathname);
+            setInviteCodeInput(urlToken);
+            
+            // Pulisce l'URL
+            window.history.replaceState({}, '', window.location.pathname + window.location.hash);
         } else {
             const savedToken = localStorage.getItem('pending_invite_token');
-            if (savedToken) setToken(savedToken);
+            if (savedToken) {
+                setToken(savedToken);
+                setInviteCodeInput(savedToken);
+            }
         }
 
         // 2. Controlla sessione
@@ -56,23 +73,62 @@ const AcceptInvite: React.FC = () => {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("Utente non loggato");
 
-            // Chiamata RPC al database
-            const { data, error } = await supabase.rpc('accept_invitation', {
+            // 1. Controlla prima se è un regalo Premium in 'premium_gifts'
+            const { data: giftData, error: giftError } = await supabase
+                .from('premium_gifts')
+                .select('*')
+                .eq('token', inviteToken)
+                .maybeSingle();
+
+            if (giftData) {
+                if (giftData.status === 'claimed') {
+                    throw new Error("Questo regalo Premium è già stato riscattato.");
+                }
+
+                // Consuma il token regalo
+                const { error: claimErr } = await supabase
+                    .from('premium_gifts')
+                    .update({
+                        status: 'claimed',
+                        claimed_at: new Date().toISOString(),
+                        claimed_by: user.id
+                    })
+                    .eq('token', inviteToken);
+
+                if (claimErr) {
+                    console.error("Errore aggiornamento premium_gifts:", claimErr);
+                }
+
+                // Aggiorna la quota a 'premium'
+                const { error: quotaErr } = await supabase
+                    .from('user_quotas')
+                    .upsert({ user_id: user.id, plan: 'premium', tokens_used: 0 }, { onConflict: 'user_id' });
+
+                if (quotaErr) {
+                    console.error("Errore upgrade quota utente:", quotaErr);
+                }
+
+                setStatus('success');
+                setMessage("Evviva! Ti è stato regalato Diario Apistico Premium! Il tuo account è ora sbloccato al 100%.");
+                localStorage.removeItem('pending_invite_token');
+                return;
+            }
+
+            // 2. Se non è un regalo premium, verifica invito team via RPC
+            let { data: rpcData, error: rpcError } = await supabase.rpc('accept_invitation', {
                 p_token: inviteToken,
                 p_user_id: user.id
             });
 
-            if (error) throw error;
+            if (rpcError) throw rpcError;
 
-            // Se la RPC restituisce successo (boolean o oggetto)
-            const isSuccess = typeof data === 'boolean' ? data : data?.success;
-            
+            const isSuccess = typeof rpcData === 'boolean' ? rpcData : rpcData?.success;
             if (isSuccess) {
                 setStatus('success');
                 setMessage('Invito accettato con successo! Ora fai parte del team.');
                 localStorage.removeItem('pending_invite_token');
             } else {
-                throw new Error(data?.message || "L'invito non è più valido o è già stato utilizzato.");
+                throw new Error(rpcData?.message || "L'invito non è più valido o è già stato utilizzato.");
             }
         } catch (err: any) {
             console.error("Errore accettazione:", err);
@@ -85,6 +141,9 @@ const AcceptInvite: React.FC = () => {
     };
 
     const goToDashboard = () => {
+        // Usa location.href per forzare un ricaricamento completo
+        // Questo permetterà a index.tsx di rimontare <App /> invece di <AcceptInvite />
+        // perché i query param sono stati rimossi.
         window.location.href = '/';
     };
 
@@ -106,9 +165,21 @@ const AcceptInvite: React.FC = () => {
                     <div className="space-y-6">
                         <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4">
                             <p className="text-amber-200 text-sm">
-                                Hai ricevuto un invito! Accedi o registrati per unirti al team e iniziare a collaborare.
+                                Hai ricevuto un invito! Inserisci il codice qui sotto o accedi per unirti al team.
                             </p>
                         </div>
+                        
+                        <input 
+                            type="text"
+                            value={inviteCodeInput}
+                            onChange={(e) => {
+                                setInviteCodeInput(e.target.value);
+                                setToken(e.target.value);
+                            }}
+                            placeholder="Inserisci codice invito..."
+                            className="w-full bg-slate-900 border border-slate-700 text-white p-3 rounded-xl text-center font-mono"
+                        />
+
                         <button 
                             onClick={() => setIsAuthModalOpen(true)}
                             className="w-full bg-amber-500 hover:bg-amber-600 text-slate-900 font-bold py-3 rounded-xl transition shadow-lg"
