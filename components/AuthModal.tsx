@@ -77,7 +77,10 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, defaultMode = 's
                     email,
                     password,
                     options: { 
-                        data: { full_name: fullName },
+                        data: { 
+                            full_name: fullName.trim(),
+                            name: fullName.trim()
+                        },
                         emailRedirectTo: redirectUrl
                     }
                 });
@@ -231,6 +234,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, defaultMode = 's
             isOpen={isOpen} 
             onClose={handleModalClose} 
             title={getTitle()}
+            alignTop={true}
             disableBackdropClick={mode === 'update_password'}
             hideCloseButton={mode === 'update_password'}
         >
