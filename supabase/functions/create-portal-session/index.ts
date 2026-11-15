@@ -76,29 +76,29 @@ serve(async (req: Request) => {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
-    // Passiamo esplicitamente il JWT a getUser(token) per evitare sessione locale assente su Deno
     const { data: userData, error: userErr } = await userClient.auth.getUser(token);
+    let userId: string | null = userData?.user?.id || null;
     let userEmail: string | null =
       userData?.user?.email || userData?.user?.user_metadata?.email || null;
 
-    // Fallback tramite Service Role se GoTrue non ha restituito l'email direttamente ma il token è valido
-    if ((!userEmail || userErr) && supabaseServiceKey) {
+    if ((!userId || !userEmail || userErr) && supabaseServiceKey) {
       try {
         const adminClient = createClient(supabaseUrl, supabaseServiceKey, {
           auth: { persistSession: false, autoRefreshToken: false },
         });
         const { data: adminUserData, error: adminErr } = await adminClient.auth.getUser(token);
         if (!adminErr && adminUserData?.user) {
+          userId = adminUserData.user.id || userId;
           userEmail =
-            adminUserData.user.email || adminUserData.user.user_metadata?.email || null;
+            adminUserData.user.email || adminUserData.user.user_metadata?.email || userEmail;
         }
       } catch (fallbackErr) {
         console.warn('Fallback adminClient.auth.getUser fallito:', fallbackErr);
       }
     }
 
-    if (!userEmail) {
-      console.error('Autenticazione fallita in create-portal-session:', userErr?.message || 'email assente');
+    if (!userId && !userEmail) {
+      console.error('Autenticazione fallita in create-portal-session:', userErr?.message || 'utente assente');
       return json(401, {
         error: 'Sessione scaduta o utente non autenticato. Esci e rientra nell’account, poi riprova.',
       });
@@ -112,23 +112,67 @@ serve(async (req: Request) => {
       httpClient: Stripe.createFetchHttpClient(),
     });
 
-    const rawEmail = userEmail.trim();
-    const lowerEmail = rawEmail.toLowerCase();
+    const candidateMap = new Map<string, Stripe.Customer>();
+    const addCandidate = (c: Stripe.Customer | Stripe.DeletedCustomer | null | undefined) => {
+      if (c && !('deleted' in c && c.deleted) && c.id) {
+        candidateMap.set(c.id, c as Stripe.Customer);
+      }
+    };
 
-    // Cerchiamo i clienti Stripe per email (provando prima esatta, poi minuscola se diversa)
-    const customerCandidates: Stripe.Customer[] = [];
-    const exactList = await stripe.customers.list({ email: rawEmail, limit: 10 });
-    customerCandidates.push(...exactList.data);
-
-    if (customerCandidates.length === 0 && lowerEmail !== rawEmail) {
-      const lowerList = await stripe.customers.list({ email: lowerEmail, limit: 10 });
-      customerCandidates.push(...lowerList.data);
+    // 1) Ricerca per supabase_user_id salvato nei metadata del Customer Stripe
+    if (userId) {
+      try {
+        const safeId = userId.replace(/'/g, '');
+        const byMeta = await stripe.customers.search({
+          query: `metadata['supabase_user_id']:'${safeId}'`,
+          limit: 10,
+        });
+        for (const c of byMeta.data) addCandidate(c);
+      } catch (searchErr) {
+        console.warn('Avviso customers.search per supabase_user_id:', searchErr);
+      }
     }
+
+    // 2) Ricerca per email dell'account (esatta + minuscola)
+    if (userEmail) {
+      const rawEmail = userEmail.trim();
+      const lowerEmail = rawEmail.toLowerCase();
+
+      const exactList = await stripe.customers.list({ email: rawEmail, limit: 10 });
+      for (const c of exactList.data) addCandidate(c);
+
+      if (lowerEmail !== rawEmail) {
+        const lowerList = await stripe.customers.list({ email: lowerEmail, limit: 10 });
+        for (const c of lowerList.data) addCandidate(c);
+      }
+    }
+
+    // 3) Fallback fondamentale per Google Pay / Apple Pay / Stripe Link con email diversa:
+    //    cerchiamo nelle Checkout Sessions chi ha acquistato con client_reference_id === userId
+    if (userId && candidateMap.size === 0) {
+      try {
+        const recentSessions = await stripe.checkout.sessions.list({ limit: 100 });
+        for (const sess of recentSessions.data) {
+          if (sess.client_reference_id === userId && sess.customer) {
+            const custId =
+              typeof sess.customer === 'string' ? sess.customer : sess.customer.id;
+            if (custId && !candidateMap.has(custId)) {
+              const retrieved = await stripe.customers.retrieve(custId);
+              addCandidate(retrieved);
+            }
+          }
+        }
+      } catch (sessErr) {
+        console.warn('Avviso ricerca checkout.sessions per client_reference_id:', sessErr);
+      }
+    }
+
+    const customerCandidates = Array.from(candidateMap.values());
 
     if (customerCandidates.length === 0) {
       return json(404, {
         error:
-          'Nessun abbonamento Stripe attivo trovato per questa email. Se il piano è stato attivato manualmente o tramite codice regalo, non richiede annullamento su Stripe.',
+          'Nessun abbonamento Stripe attivo trovato per questo account. Se il piano è stato attivato manualmente o tramite codice regalo, non richiede annullamento su Stripe.',
       });
     }
 
@@ -155,6 +199,21 @@ serve(async (req: Request) => {
 
       if (!foundPrioritySub && subs.data.length > 0) {
         chosenCustomer = candidate;
+      }
+    }
+
+    // Assicuriamoci che supabase_user_id sia salvato sul Customer scelto per futuri webhook di disdetta
+    if (userId && chosenCustomer.metadata?.supabase_user_id !== userId) {
+      try {
+        await stripe.customers.update(chosenCustomer.id, {
+          metadata: {
+            ...(chosenCustomer.metadata || {}),
+            supabase_user_id: userId,
+            ...(userEmail ? { app_email: userEmail.trim().toLowerCase() } : {}),
+          },
+        });
+      } catch (metaErr) {
+        console.warn('Avviso salvataggio metadata su Stripe Customer:', metaErr);
       }
     }
 

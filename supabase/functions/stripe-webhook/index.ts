@@ -201,6 +201,38 @@ serve(async (req: Request) => {
           // Ignora se la colonna non esiste
         }
 
+        // Salviamo l'ID utente Supabase nei metadata del Customer e della Subscription su Stripe
+        // così disdetta e rinnovi funzionano anche se Google Pay / Stripe Link usano un'email diversa
+        if (stripeKey) {
+          try {
+            const sessionCustomerId =
+              typeof session.customer === 'string' ? session.customer : session.customer?.id;
+            if (sessionCustomerId) {
+              await stripe.customers.update(sessionCustomerId, {
+                metadata: {
+                  supabase_user_id: resolvedUserId,
+                  ...(customerEmail ? { checkout_email: customerEmail } : {}),
+                },
+              });
+            }
+
+            const sessionSubId =
+              typeof session.subscription === 'string'
+                ? session.subscription
+                : session.subscription?.id;
+            if (sessionSubId) {
+              await stripe.subscriptions.update(sessionSubId, {
+                metadata: {
+                  supabase_user_id: resolvedUserId,
+                  plan: resolvedPlan,
+                },
+              });
+            }
+          } catch (metaUpdateErr) {
+            console.warn('Avviso aggiornamento metadata su Stripe:', metaUpdateErr);
+          }
+        }
+
         console.log(`🎉 Utente ${resolvedUserId} (${customerEmail}) promosso con successo a ${resolvedPlan}!`);
 
         // --- SISTEMA REFERRAL: PREMIA L'INVITANTE (+1 MESE GRATIS) ---
@@ -310,23 +342,59 @@ serve(async (req: Request) => {
       case 'customer.subscription.deleted': {
         // Gestione cancellazione abbonamento: riporta l'utente al piano 'free'
         const subscription = event.data.object as Stripe.Subscription;
-        const customerId = subscription.customer as string;
+        const customerId =
+          typeof subscription.customer === 'string'
+            ? subscription.customer
+            : subscription.customer?.id;
 
         console.log(`🛑 Abbonamento cancellato per Stripe Customer: ${customerId}`);
 
-        // Recuperiamo l'email del customer da Stripe se necessario
         try {
+          let resolvedUserId: string | null = subscription.metadata?.supabase_user_id || null;
           let customerEmail: string | null = null;
-          if (stripeKey) {
+
+          if (stripeKey && customerId) {
+            // Verifichiamo se il cliente ha un altro abbonamento ancora attivo prima di passare a free
+            const activeSubs = await stripe.subscriptions.list({
+              customer: customerId,
+              status: 'active',
+              limit: 5,
+            });
+            if (activeSubs.data.length > 0) {
+              console.log(
+                `ℹ️ Il cliente ${customerId} ha ancora un altro abbonamento attivo; nessun downgrade a free.`
+              );
+              break;
+            }
+
             const customer = await stripe.customers.retrieve(customerId);
-            if (customer && !customer.deleted && customer.email) {
-              customerEmail = customer.email;
+            if (customer && !customer.deleted) {
+              if (!resolvedUserId && customer.metadata?.supabase_user_id) {
+                resolvedUserId = customer.metadata.supabase_user_id;
+              }
+              if (customer.email) {
+                customerEmail = customer.email;
+              }
+            }
+
+            // Fallback su Checkout Sessions del customer (legge client_reference_id se Google Pay / Link aveva cambiato email)
+            if (!resolvedUserId) {
+              try {
+                const custSessions = await stripe.checkout.sessions.list({
+                  customer: customerId,
+                  limit: 10,
+                });
+                const matchedSession = custSessions.data.find((s) => !!s.client_reference_id);
+                if (matchedSession?.client_reference_id) {
+                  resolvedUserId = matchedSession.client_reference_id;
+                }
+              } catch (sessLookupErr) {
+                console.warn('Avviso ricerca checkout.sessions in disdetta:', sessLookupErr);
+              }
             }
           }
 
-          if (customerEmail) {
-            let resolvedUserId: string | null = null;
-
+          if (!resolvedUserId && customerEmail) {
             const { data: userRow } = await supabaseAdmin
               .from('users')
               .select('id')
@@ -348,24 +416,30 @@ serve(async (req: Request) => {
                 console.warn('Errore ricerca in auth.users (disdetta):', authLookupErr);
               }
             }
+          }
 
-            if (resolvedUserId) {
+          if (resolvedUserId) {
+            await supabaseAdmin
+              .from('user_quotas')
+              .update({ plan: 'free' })
+              .eq('user_id', resolvedUserId);
+
+            try {
               await supabaseAdmin
-                .from('user_quotas')
+                .from('users')
                 .update({ plan: 'free' })
-                .eq('user_id', resolvedUserId);
-
-              try {
-                await supabaseAdmin
-                  .from('users')
-                  .update({ plan: 'free' })
-                  .eq('id', resolvedUserId);
-              } catch (_) {
-                // Ignoriamo se la colonna plan non esiste su public.users
-              }
-
-              console.log(`Piano resettato a free per utente ${resolvedUserId} (${customerEmail})`);
+                .eq('id', resolvedUserId);
+            } catch (_) {
+              // Ignoriamo se la colonna plan non esiste su public.users
             }
+
+            console.log(
+              `✅ Piano resettato a free per utente ${resolvedUserId} (${customerEmail || customerId})`
+            );
+          } else {
+            console.warn(
+              `⚠️ Nessun utente Supabase trovato per disdetta Customer ${customerId} (${customerEmail})`
+            );
           }
         } catch (subErr) {
           console.warn('Errore gestione disdetta abbonamento:', subErr);
@@ -377,9 +451,33 @@ serve(async (req: Request) => {
         // Rinnovo periodico (mensile o annuale): azzera i token consumati del mese
         const invoice = event.data.object as Stripe.Invoice;
         const customerEmail = invoice.customer_email;
+        const customerId =
+          typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
 
-        if (customerEmail) {
-          console.log(`🔄 Rinnovo mensile riuscito per ${customerEmail}. Azzeramento token.`);
+        let resolvedUserId: string | null = null;
+
+        if (stripeKey && customerId) {
+          try {
+            const customer = await stripe.customers.retrieve(customerId);
+            if (customer && !customer.deleted && customer.metadata?.supabase_user_id) {
+              resolvedUserId = customer.metadata.supabase_user_id;
+            }
+            if (!resolvedUserId) {
+              const custSessions = await stripe.checkout.sessions.list({
+                customer: customerId,
+                limit: 10,
+              });
+              const matchedSession = custSessions.data.find((s) => !!s.client_reference_id);
+              if (matchedSession?.client_reference_id) {
+                resolvedUserId = matchedSession.client_reference_id;
+              }
+            }
+          } catch (invCustErr) {
+            console.warn('Avviso recupero customer in invoice.payment_succeeded:', invCustErr);
+          }
+        }
+
+        if (!resolvedUserId && customerEmail) {
           const { data: userRow } = await supabaseAdmin
             .from('users')
             .select('id')
@@ -387,11 +485,18 @@ serve(async (req: Request) => {
             .maybeSingle();
 
           if (userRow?.id) {
-            await supabaseAdmin
-              .from('user_quotas')
-              .update({ tokens_used: 0, last_reset: new Date().toISOString() })
-              .eq('user_id', userRow.id);
+            resolvedUserId = userRow.id;
           }
+        }
+
+        if (resolvedUserId) {
+          console.log(
+            `🔄 Rinnovo riuscito per utente ${resolvedUserId} (${customerEmail || customerId}). Azzeramento token.`
+          );
+          await supabaseAdmin
+            .from('user_quotas')
+            .update({ tokens_used: 0, last_reset: new Date().toISOString() })
+            .eq('user_id', resolvedUserId);
         }
         break;
       }
