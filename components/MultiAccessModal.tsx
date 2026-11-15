@@ -11,9 +11,9 @@ interface MultiAccessModalProps {
 }
 
 const STRIPE_LINKS: Record<'premium' | 'team' | 'enterprise', string> = {
-  premium: 'https://buy.stripe.com/test_aFa6oIfbB0O2gmI5UC1kA00',
-  team: 'https://buy.stripe.com/test_cNi7sMgfF9ky5I482K1kA01',
-  enterprise: 'https://buy.stripe.com/test_bJecN65B168meeA1Em1kA02',
+  premium: 'https://buy.stripe.com/aFa3cw5B18gu9Ykcj01kA03',
+  team: 'https://buy.stripe.com/cNi7sMgfF9ky5I482K1kA01',
+  enterprise: 'https://buy.stripe.com/bJecN65B168meeA1Em1kA02',
 };
 
 const MultiAccessModal: React.FC<MultiAccessModalProps> = ({ 
