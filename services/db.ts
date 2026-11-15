@@ -13,7 +13,8 @@ const CURRENT_TEAM_KEY = 'beewise-current-team-id';
 
 export const getCurrentTeamId = () => {
   try {
-    return localStorage.getItem(CURRENT_TEAM_KEY);
+    const val = localStorage.getItem(CURRENT_TEAM_KEY);
+    return (!val || val === 'personal') ? null : val;
   } catch {
     return null;
   }
@@ -21,7 +22,7 @@ export const getCurrentTeamId = () => {
 
 export const setCurrentTeamId = (teamId: string | null) => {
   try {
-    if (!teamId) localStorage.removeItem(CURRENT_TEAM_KEY);
+    if (!teamId) localStorage.setItem(CURRENT_TEAM_KEY, 'personal');
     else localStorage.setItem(CURRENT_TEAM_KEY, teamId);
   } catch {
     // ignore
@@ -199,7 +200,7 @@ export const saveToCloud = async (
 export const loadFromCloud = async (
   userId: string,
   teamIdOverride?: string | null
-): Promise<{ data: UserData | null; updatedAt: string | null }> => {
+): Promise<{ data: UserData | null; updatedAt: string | null; notFound?: boolean; error?: boolean }> => {
   try {
     const ctx = getContext(userId, teamIdOverride);
     
@@ -273,10 +274,10 @@ export const loadFromCloud = async (
     const content = await parsePayloadContent(data?.content);
     const updatedAt = (data as any)?.updated_at ?? null;
 
-    return { data: content, updatedAt };
+    return { data: content, updatedAt, notFound: !data };
   } catch (error) {
     console.error('Errore durante il caricamento:', error);
-    return { data: null, updatedAt: null };
+    return { data: null, updatedAt: null, error: true };
   }
 };
 

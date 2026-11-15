@@ -21,6 +21,15 @@ function useLocalStorage<T>(key: string, initialValue: T): [T, Dispatch<SetState
     return safeParse(window.localStorage.getItem(key), initialValue);
   });
 
+  const [prevKey, setPrevKey] = useState(key);
+  if (key !== prevKey) {
+    setPrevKey(key);
+    const nextValue = typeof window === 'undefined'
+      ? initialValue
+      : safeParse(window.localStorage.getItem(key), initialValue);
+    setStoredValue(nextValue);
+  }
+
   const setValue = useCallback((value: T | ((val: T) => T)) => {
     try {
       setStoredValue((prevValue) => {

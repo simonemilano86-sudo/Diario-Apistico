@@ -1,0 +1,16 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.beewise.diario",
+      "sha256_cert_fingerprints": [
+        "0E:3D:B4:2A:66:E5:A9:7D:8B:8A:25:B1:A0:98:81:93:21:48:63:84:8D:F8:7E:F4:2A:81:6F:3D:4B:44:80:C6",
+        "DA:95:97:1A:1F:89:18:0A:56:F1:8A:FF:54:D2:67:19:0C:79:09:08:DD:85:91:08:FA:01:EC:71:4D:05:CB:38",
+        "FE:5C:49:BA:51:AB:57:C4:76:EC:D3:9A:02:A8:C1:BB:89:C1:2E:32:84:BA:3F:4B:17:CC:19:8C:A9:C2:E6:65"
+      ]
+    }
+  }
+]

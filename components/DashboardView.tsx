@@ -33,15 +33,8 @@ const DashboardView: React.FC<DashboardViewProps> = ({
         ? availableTeams.find(t => t.team_id === activeTeamId)?.team_name 
         : 'Profilo personale';
 
-    // Determina se mostrare il menu di contesto:
-    // Richiesta: Il menu deve essere visibile ESCLUSIVAMENTE per l'operatore (chi è stato invitato).
-    // Gli amministratori (role: 'ADMIN') non devono vedere il selettore.
-    const hasOperatorRoles = availableTeams.some(t => {
-        const r = (t.role || '').toUpperCase();
-        return r !== 'ADMIN' && r !== 'OWNER';
-    });
-    
-    const showScopeSelector = !!user && hasOperatorRoles;
+    // Mostra il selettore di contesto a tutti gli utenti che fanno parte di almeno un team (sia Admin che Operatori)
+    const showScopeSelector = !!user && availableTeams.length > 0;
 
     return (
         <div className="animate-fade-in pb-20">

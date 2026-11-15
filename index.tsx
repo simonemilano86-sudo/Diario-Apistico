@@ -73,10 +73,13 @@ try {
         const token = hash.split('=')[1];
         localStorage.setItem('pending_invite_token', token);
         // Redirect to accept-invite page to handle the flow
-        window.location.href = '/accept-invite';
+        window.location.href = `/accept-invite?token=${encodeURIComponent(token)}`;
     }
 
-    const isInviteFlow = path === '/accept-invite' || pageParam === 'accept-invite' || hash.includes('accept-invite');
+    const isInviteFlow =
+        path.startsWith('/accept-invite') ||
+        pageParam === 'accept-invite' ||
+        hash.includes('accept-invite');
     
     root.render(
         <React.StrictMode>

@@ -60,6 +60,19 @@ const ApiaryModal: React.FC<ApiaryModalProps> = ({ isOpen, onClose, onSave, apia
   useEffect(() => {
     if (!isOpen) return;
 
+    let attachedScript: HTMLScriptElement | null = null;
+
+    const handleScriptLoad = () => {
+      console.log('Google Maps Places library loaded.');
+      setIsGoogleLoaded(!!window.google?.maps?.places);
+    };
+
+    const handleScriptError = () => {
+      setAuthError('Impossibile caricare Google Maps. Controlla la connessione.');
+    };
+
+    setAuthError(null);
+
     const checkAndLoadGoogle = () => {
       // già caricato
       if (window.google?.maps?.places) {
@@ -89,23 +102,29 @@ const ApiaryModal: React.FC<ApiaryModalProps> = ({ isOpen, onClose, onSave, apia
         script.async = true;
         script.defer = true;
 
-        script.onload = () => {
-          console.log('Google Maps Places library loaded.');
-          setIsGoogleLoaded(!!window.google?.maps?.places);
-        };
-
-        script.onerror = () => {
-          setAuthError('Impossibile caricare Google Maps. Controlla la connessione.');
-        };
+        script.addEventListener('load', handleScriptLoad);
+        script.addEventListener('error', handleScriptError);
+        attachedScript = script;
 
         document.head.appendChild(script);
+      } else if (window.google?.maps?.places) {
+        setIsGoogleLoaded(true);
       } else {
-        // script esiste ma magari non è pronto
-        setIsGoogleLoaded(!!window.google?.maps?.places);
+        // script già in DOM ma ancora in caricamento: agganciati agli eventi
+        existingScript.addEventListener('load', handleScriptLoad);
+        existingScript.addEventListener('error', handleScriptError);
+        attachedScript = existingScript;
       }
     };
 
     checkAndLoadGoogle();
+
+    return () => {
+      if (attachedScript) {
+        attachedScript.removeEventListener('load', handleScriptLoad);
+        attachedScript.removeEventListener('error', handleScriptError);
+      }
+    };
   }, [isOpen, GOOGLE_API_KEY]);
 
   // Inizializzazione Autocomplete
@@ -186,7 +205,7 @@ const ApiaryModal: React.FC<ApiaryModalProps> = ({ isOpen, onClose, onSave, apia
       setCoordsFound(false);
     }
 
-    setAuthError(null);
+    setError(null);
     setShowErrorModal(false);
   }, [apiaryToEdit, isOpen]);
 
@@ -328,7 +347,8 @@ const ApiaryModal: React.FC<ApiaryModalProps> = ({ isOpen, onClose, onSave, apia
           .pac-item-query { font-size: 14px; color: #0f172a; padding-right: 5px; }
           .pac-matched { font-weight: 700; color: #f59e0b; }
         `}</style>
-        <form onSubmit={handleSubmit} className="flex-grow flex flex-col space-y-4 p-4 overflow-y-auto pb-24">
+        <div className="flex-1 flex flex-col min-h-0">
+          <form id="apiary-form" onSubmit={handleSubmit} className="flex-1 overflow-y-auto custom-scrollbar space-y-4 px-1 pb-6">
           {(!isOnline || !!authError) && (
             <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg flex items-center gap-2">
               <WarningIcon className="w-5 h-5 flex-shrink-0" />
@@ -382,7 +402,7 @@ const ApiaryModal: React.FC<ApiaryModalProps> = ({ isOpen, onClose, onSave, apia
                 onChange={handleChange}
                 required
                 placeholder={(isOnline && !authError) ? (isGoogleLoaded ? 'Cerca e seleziona un luogo...' : 'Caricamento mappe...') : 'Inserisci località o riferimento...'}
-                className={`mt-1 block w-full pl-10 pr-3 py-2 shadow-sm sm:text-sm border rounded-md dark:bg-slate-700 dark:text-white focus:ring-amber-500 focus:border-amber-500 ${
+                className={`mt-1 block w-full pl-10 pr-10 py-2 shadow-sm sm:text-sm border rounded-md dark:bg-slate-700 dark:text-white focus:ring-amber-500 focus:border-amber-500 ${
                   coordsFound
                     ? 'border-green-500 dark:border-green-500'
                     : 'border-slate-300 dark:border-slate-600'
@@ -472,23 +492,27 @@ const ApiaryModal: React.FC<ApiaryModalProps> = ({ isOpen, onClose, onSave, apia
             )}
           </div>
 
-          <div className="h-10" /> {/* Spacer for fixed footer */}
-        </form>
+          </form>
 
-        <div className="absolute bottom-0 left-0 right-0 p-4 bg-white dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex gap-3 z-10">
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex-1 px-4 py-3 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold rounded-xl hover:bg-slate-200 dark:hover:bg-slate-600 transition"
+          <div
+            className="shrink-0 pt-4 bg-white dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex gap-3"
+            style={{ paddingBottom: 'calc(1.25rem + env(safe-area-inset-bottom))' }}
           >
-            Annulla
-          </button>
-          <button
-            onClick={handleSubmit}
-            className="flex-[2] px-4 py-3 bg-amber-500 text-white font-bold rounded-xl hover:bg-amber-600 transition shadow-lg shadow-amber-500/20"
-          >
-            Salva Apiario
-          </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-4 py-3 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-100 font-bold rounded-xl hover:bg-slate-200 dark:hover:bg-slate-600 transition"
+            >
+              Annulla
+            </button>
+            <button
+              type="submit"
+              form="apiary-form"
+              className="flex-[2] px-4 py-3 bg-amber-500 text-white font-bold rounded-xl hover:bg-amber-600 transition shadow-lg shadow-amber-500/20"
+            >
+              Salva Apiario
+            </button>
+          </div>
         </div>
       </Modal>
 

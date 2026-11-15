@@ -21,6 +21,7 @@ interface ProfileViewProps {
   onLogout: () => void;
   onOpenMultiAccess: () => void;
   onPlanChanged?: (newPlan: 'free' | 'premium' | 'team' | 'enterprise') => void;
+  onOpenTips?: () => void;
 }
 
 const ProfileView: React.FC<ProfileViewProps> = ({
@@ -30,6 +31,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({
   onLogout,
   onOpenMultiAccess,
   onPlanChanged,
+  onOpenTips,
 }) => {
   // --- PASSWORD CHANGE STATE ---
   const [isChangingPassword, setIsChangingPassword] = useState(false);
@@ -456,6 +458,26 @@ const ProfileView: React.FC<ProfileViewProps> = ({
             </div>
           </div>
         </div>
+
+        {/* SEZIONE GUIDA E TRUCCHI */}
+        {onOpenTips && (
+          <div className="bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent border border-amber-200 dark:border-amber-800/60 rounded-2xl p-5 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <span className="text-3xl">💡</span>
+              <div>
+                <h3 className="font-bold text-sm text-slate-900 dark:text-white">Trucchi & Consigli per l'Apicoltore</h3>
+                <p className="text-xs text-slate-600 dark:text-slate-300">Scopri come usare l'app da PC, velocizzare i trattamenti e gestire la squadra.</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onOpenTips}
+              className="px-4 py-2 text-xs font-bold rounded-xl bg-amber-500 hover:bg-amber-600 text-white shadow-sm transition shrink-0"
+            >
+              Apri Guida
+            </button>
+          </div>
+        )}
 
         {/* SEZIONE 4: ZONA DI PERICOLO (Danger Zone) */}
         <div className="rounded-2xl p-6 border-2 border-red-200 dark:border-red-900/60 bg-red-50/50 dark:bg-red-950/20 space-y-4">

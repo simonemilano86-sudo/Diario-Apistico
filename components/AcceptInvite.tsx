@@ -1,26 +1,33 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Capacitor } from '@capacitor/core';
 import { supabase } from '../services/supabase';
 import { BeeIcon, CheckCircleIcon, WarningIcon, LogoutIcon } from './Icons';
 import AuthModal from './AuthModal';
 
-const AcceptInvite: React.FC = () => {
-    const [token, setToken] = useState<string | null>(null);
+interface AcceptInviteProps {
+    initialToken?: string | null;
+    onDone?: () => void;
+}
+
+const AcceptInvite: React.FC<AcceptInviteProps> = ({ initialToken, onDone }) => {
+    const [token, setToken] = useState<string | null>(initialToken || null);
     const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
     const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
     const [message, setMessage] = useState<string>('');
     const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
     
-    const [inviteCodeInput, setInviteCodeInput] = useState('');
+    const [inviteCodeInput, setInviteCodeInput] = useState(initialToken || '');
     
     const hasAttemptedRef = useRef(false);
+    const isAndroidMobileWeb = !Capacitor.isNativePlatform() && /Android/i.test(navigator.userAgent);
 
     useEffect(() => {
-        // 1. Recupera token dall'URL (query param o hash)
+        // 1. Recupera token da prop, query param, hash o localStorage
         const params = new URLSearchParams(window.location.search);
-        let urlToken = params.get('token');
+        let urlToken = initialToken || params.get('token');
         
-        if (!urlToken && window.location.hash) {
+        if (!urlToken && window.location.hash && window.location.hash.includes('?')) {
             const hashParams = new URLSearchParams(window.location.hash.split('?')[1]);
             urlToken = hashParams.get('token');
         }
@@ -34,14 +41,21 @@ const AcceptInvite: React.FC = () => {
             localStorage.setItem('pending_invite_token', urlToken);
             setToken(urlToken);
             setInviteCodeInput(urlToken);
+
+            // Se aperto in un browser Android esterno, tenta una volta di aprire direttamente l'app installata
+            if (isAndroidMobileWeb) {
+                const guardKey = `beewise_invite_app_redirect_${urlToken}`;
+                if (!sessionStorage.getItem(guardKey)) {
+                    sessionStorage.setItem(guardKey, '1');
+                    setTimeout(() => {
+                        window.location.href = `com.beewise.diario://accept-invite?token=${encodeURIComponent(urlToken!)}`;
+                    }, 150);
+                }
+            }
             
-            // Pulisce l'URL
-            window.history.replaceState({}, '', window.location.pathname + window.location.hash);
-        } else {
-            const savedToken = localStorage.getItem('pending_invite_token');
-            if (savedToken) {
-                setToken(savedToken);
-                setInviteCodeInput(savedToken);
+            // Pulisce l'URL solo sul flusso standalone web
+            if (!initialToken && window.location.pathname.startsWith('/accept-invite')) {
+                window.history.replaceState({}, '', window.location.pathname + window.location.hash);
             }
         }
 
@@ -50,12 +64,12 @@ const AcceptInvite: React.FC = () => {
             setIsLoggedIn(!!session);
         });
 
-        const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
             setIsLoggedIn(!!session);
         });
 
         return () => subscription.unsubscribe();
-    }, []);
+    }, [initialToken, isAndroidMobileWeb]);
 
     useEffect(() => {
         if (isLoggedIn && token && !isProcessing && status === 'idle' && !hasAttemptedRef.current) {
@@ -141,10 +155,23 @@ const AcceptInvite: React.FC = () => {
     };
 
     const goToDashboard = () => {
+        localStorage.removeItem('pending_invite_token');
+        if (onDone) {
+            onDone();
+            return;
+        }
         // Usa location.href per forzare un ricaricamento completo
         // Questo permetterà a index.tsx di rimontare <App /> invece di <AcceptInvite />
         // perché i query param sono stati rimossi.
         window.location.href = '/';
+    };
+
+    const openInNativeApp = () => {
+        const activeToken = (token || inviteCodeInput || '').trim();
+        const deepLink = activeToken
+            ? `com.beewise.diario://accept-invite?token=${encodeURIComponent(activeToken)}`
+            : `com.beewise.diario://accept-invite`;
+        window.location.href = deepLink;
     };
 
     const handleLogout = async () => {
@@ -159,7 +186,22 @@ const AcceptInvite: React.FC = () => {
             <div className="max-w-md w-full bg-slate-800 rounded-2xl shadow-2xl border border-slate-700 p-8 text-center animate-fade-in">
                 <BeeIcon className="w-16 h-16 text-amber-500 mx-auto mb-6" />
                 <h1 className="text-2xl font-bold mb-2">Diario Apistico</h1>
-                <p className="text-slate-400 text-sm mb-8">Collaborazione Team</p>
+                <p className="text-slate-400 text-sm mb-6">Collaborazione Team</p>
+
+                {isAndroidMobileWeb && (
+                    <div className="mb-6 bg-amber-500/15 border border-amber-500/40 rounded-xl p-3.5 space-y-2.5">
+                        <p className="text-xs text-amber-100 leading-relaxed">
+                            Hai già l'app <strong>Diario Apistico</strong> installata sul telefono? Aprila direttamente per accettare l'invito lì dentro.
+                        </p>
+                        <button
+                            type="button"
+                            onClick={openInNativeApp}
+                            className="w-full bg-amber-500 hover:bg-amber-600 text-slate-900 font-bold py-2.5 px-4 rounded-xl text-sm transition shadow-md cursor-pointer"
+                        >
+                            📱 Apri nell'App Diario Apistico
+                        </button>
+                    </div>
+                )}
 
                 {!isLoggedIn ? (
                     <div className="space-y-6">

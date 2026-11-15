@@ -52,6 +52,25 @@
                 <data android:scheme="com.beewise.diario" android:host="auth" />
             </intent-filter>
 
+            <!-- Deep Links per Inviti e Ritorno Pagamento (Custom Scheme) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="com.beewise.diario" android:host="accept-invite" />
+                <data android:scheme="com.beewise.diario" android:host="payment-success" />
+            </intent-filter>
+
+            <!-- Android App Links per https://app.diarioapistico.com -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="app.diarioapistico.com" android:path="/" />
+                <data android:scheme="https" android:host="app.diarioapistico.com" android:pathPrefix="/accept-invite" />
+                <data android:scheme="https" android:host="app.diarioapistico.com" android:pathPrefix="/payment-success" />
+            </intent-filter>
+
         </activity>
 
         <provider

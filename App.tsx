@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { App as CapacitorApp } from '@capacitor/app';
+import { Capacitor } from '@capacitor/core';
 import { supabase } from './services/supabase';
 import useLocalStorage from './hooks/useLocalStorage';
 import {
@@ -61,9 +62,11 @@ import WelcomeModal from './components/WelcomeModal';
 import PremiumModal from './components/PremiumModal';
 import MultiAccessModal from './components/MultiAccessModal';
 import FeedbackModal from './components/AppFeedbackModal';
+import TipsModal from './components/TipsModal';
 import TrashView from './components/TrashView';
 import PremiumGiftModal from './components/PremiumGiftModal';
 import ReferralModal from './components/ReferralModal';
+import AcceptInvite from './components/AcceptInvite';
 
 import {
   StylizedFlowerIcon,
@@ -99,6 +102,8 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [currentUserId, setCurrentUserId] = useLocalStorage<string | null>('beewise-user-id', null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [deepLinkInviteToken, setDeepLinkInviteToken] = useState<string | null>(null);
+  const [paymentReturnModal, setPaymentReturnModal] = useState<{ plan: string; isWebBridge: boolean } | null>(null);
 
   useEffect(() => {
     const handleOnline = () => {
@@ -300,11 +305,13 @@ const App: React.FC = () => {
 
   const [view, setView] = useState<View>('dashboard');
   const [availableTeams, setAvailableTeams] = useState<TeamOption[]>([]);
-  const [activeTeamId, setActiveTeamId] = useState<string | null>(null);
+  const [activeTeamId, setActiveTeamId] = useState<string | null>(() => getCurrentTeamId());
   const [isScopeMenuOpen, setIsScopeMenuOpen] = useState(false);
   const scopeMenuRef = useRef<HTMLDivElement>(null);
 
-  const scopeKey = activeTeamId ? `team:${activeTeamId}` : 'personal';
+  const scopeKey = activeTeamId
+    ? `team:${activeTeamId}`
+    : `user:${currentUserId || 'anon'}:personal`;
 
   // Local Storage Scoped
   const [apiaries, setApiaries] = useLocalStorage<Apiary[]>(`beewise:${scopeKey}:apiaries`, []);
@@ -326,7 +333,9 @@ const App: React.FC = () => {
   const isSyncingRef = useRef(false);
   const isSavingRef = useRef(false);
   const isSwitchingRef = useRef(false);
-  const activeTeamIdRef = useRef<string | null>(null);
+  const activeTeamIdRef = useRef<string | null>(activeTeamId);
+  const hasUnsavedChangesRef = useRef(hasUnsavedChanges);
+  const handleCloudSyncRef = useRef<((userId: string, forcedTeamId?: string | null, isFromRealtime?: boolean) => Promise<void>) | null>(null);
   const unsavedChangesCounterRef = useRef(0);
 
   // Data Refs
@@ -342,6 +351,7 @@ const App: React.FC = () => {
   useEffect(() => { savedLocationRef.current = savedLocation; }, [savedLocation]);
   useEffect(() => { deletedIdsRef.current = deletedIds; }, [deletedIds]);
   useEffect(() => { activeTeamIdRef.current = activeTeamId; }, [activeTeamId]);
+  useEffect(() => { hasUnsavedChangesRef.current = hasUnsavedChanges; }, [hasUnsavedChanges]);
 
   // --- DERIVED ACTIVE STATE (Excludes Soft Deleted Items) ---
   const activeApiaries = useMemo(() => {
@@ -474,6 +484,7 @@ const App: React.FC = () => {
   const [isPremiumGiftModalOpen, setIsPremiumGiftModalOpen] = useState(false);
   const [isReferralModalOpen, setIsReferralModalOpen] = useState(false);
   const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
+  const [isTipsModalOpen, setIsTipsModalOpen] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState<DeleteItem | null>(null);
 
   const [apiaryToEdit, setApiaryToEdit] = useState<Apiary | null>(null);
@@ -506,16 +517,55 @@ const App: React.FC = () => {
     setView(nextView);
   }, []);
 
-  // Listener per link NFC e Deep Links (Supabase Auth)
+  const handlePaymentReturn = useCallback(async (rawPlan?: string | null) => {
+    const normalizedHint = rawPlan === 'singolo'
+      ? 'premium'
+      : rawPlan === 'azienda'
+        ? 'enterprise'
+        : rawPlan;
+    const hintedPlan: 'premium' | 'team' | 'enterprise' | null =
+      normalizedHint === 'team' || normalizedHint === 'enterprise' || normalizedHint === 'premium'
+        ? normalizedHint
+        : null;
+
+    const uid = currentUserId || localStorage.getItem('beewise-user-id');
+    let finalPlan: 'free' | 'premium' | 'team' | 'enterprise' = hintedPlan || 'premium';
+
+    if (uid) {
+      const dbPlan = await fetchUserPlan(uid);
+      if (dbPlan && dbPlan !== 'free') {
+        finalPlan = dbPlan;
+      } else if (hintedPlan) {
+        const upgraded = await upgradeToPremium(uid, hintedPlan);
+        if (upgraded) {
+          finalPlan = hintedPlan;
+        }
+      }
+
+      if (finalPlan !== 'free') {
+        localStorage.setItem(`beewise:plan:${uid}`, finalPlan);
+        setUser(prev => prev ? { ...prev, plan: finalPlan } : null);
+        setIsDoubleLogin(false);
+        setHasUnsavedChanges(true);
+      }
+    }
+
+    const isAndroidMobileWeb = !Capacitor.isNativePlatform() && /Android/i.test(navigator.userAgent);
+    setPaymentReturnModal({
+      plan: finalPlan,
+      isWebBridge: isAndroidMobileWeb,
+    });
+  }, [currentUserId, setUser]);
+
+  // Listener per link NFC e Deep Links (Supabase Auth, Inviti, Ritorno Stripe)
   useEffect(() => {
-    const handler = CapacitorApp.addListener('appUrlOpen', async (event) => {
-      const url = event.url;
-      
+    const handleIncomingAppUrl = async (url: string) => {
+      if (!url) return;
+
       // Gestione NFC
       if (url.includes('beewise://hive/')) {
         const hiveId = url.split('/').pop();
         if (hiveId) {
-          // Cerca l'arnia e l'apiario corrispondente
           for (const apiary of apiariesRef.current) {
             const hive = apiary.hives.find(h => h.id === hiveId);
             if (hive) {
@@ -526,6 +576,44 @@ const App: React.FC = () => {
             }
           }
         }
+        return;
+      }
+
+      // Gestione Invito Team / Regalo Premium via App Link o Custom Scheme
+      if (url.includes('accept-invite')) {
+        let inviteToken: string | null = null;
+        try {
+          const parsed = new URL(url);
+          inviteToken = parsed.searchParams.get('token');
+          if (!inviteToken && parsed.hash.includes('?')) {
+            inviteToken = new URLSearchParams(parsed.hash.split('?')[1]).get('token');
+          }
+        } catch {
+          const match = url.match(/[?&]token=([^&#]+)/);
+          if (match) inviteToken = decodeURIComponent(match[1]);
+        }
+        if (inviteToken) {
+          localStorage.setItem('pending_invite_token', inviteToken);
+          setDeepLinkInviteToken(inviteToken);
+        }
+        return;
+      }
+
+      // Gestione ritorno da Stripe via App Link o Custom Scheme
+      if (url.includes('payment-success') || url.includes('payment=success') || url.includes('payment_success=true')) {
+        let paidPlan: string | null = null;
+        try {
+          const parsed = new URL(url);
+          paidPlan = parsed.searchParams.get('plan');
+          if (!paidPlan && parsed.hash.includes('?')) {
+            paidPlan = new URLSearchParams(parsed.hash.split('?')[1]).get('plan');
+          }
+        } catch {
+          const match = url.match(/[?&]plan=([^&#]+)/);
+          if (match) paidPlan = decodeURIComponent(match[1]);
+        }
+        await handlePaymentReturn(paidPlan);
+        return;
       }
       
       // Gestione Supabase Auth (Deep Links)
@@ -577,16 +665,32 @@ const App: React.FC = () => {
           }
         }
       }
+    };
+
+    // Gestione avvio a freddo (app chiusa lanciata tramite deep link)
+    if (Capacitor.isNativePlatform()) {
+      CapacitorApp.getLaunchUrl()
+        .then((res) => {
+          if (res?.url) {
+            handleIncomingAppUrl(res.url);
+          }
+        })
+        .catch(() => {});
+    }
+
+    const handler = CapacitorApp.addListener('appUrlOpen', async (event) => {
+      await handleIncomingAppUrl(event.url);
     });
     return () => {
       handler.then(h => h.remove());
     };
-  }, [navigateTo]);
+  }, [navigateTo, handlePaymentReturn]);
 
   useEffect(() => {
     const handler = CapacitorApp.addListener('backButton', () => {
       // Check if any modal is open
-      if (isFeedbackModalOpen) setIsFeedbackModalOpen(false);
+      if (isTipsModalOpen) setIsTipsModalOpen(false);
+      else if (isFeedbackModalOpen) setIsFeedbackModalOpen(false);
       else if (isPremiumModalOpen) setIsPremiumModalOpen(false);
       else if (isPremiumGiftModalOpen) setIsPremiumGiftModalOpen(false);
       else if (isReferralModalOpen) setIsReferralModalOpen(false);
@@ -621,7 +725,7 @@ const App: React.FC = () => {
       handler.then(h => h.remove());
     };
   }, [
-    isFeedbackModalOpen, isPremiumModalOpen, isPremiumGiftModalOpen, isReferralModalOpen, isMultiAccessModalOpen,
+    isTipsModalOpen, isFeedbackModalOpen, isPremiumModalOpen, isPremiumGiftModalOpen, isReferralModalOpen, isMultiAccessModalOpen,
     isAuthModalOpen, isAuthAlertOpen, isApiaryModalOpen, isHiveModalOpen, 
     isInspectionModalOpen, isTransferModalOpen, isMovementModalOpen, 
     isProductionModalOpen, isBloomModalOpen, isScaleModalOpen, 
@@ -687,6 +791,7 @@ const App: React.FC = () => {
   const triggerSave = useCallback(() => {
     if (isSwitchingRef.current) return;
     unsavedChangesCounterRef.current += 1;
+    hasUnsavedChangesRef.current = true;
     setHasUnsavedChanges(true);
   }, []);
 
@@ -743,13 +848,20 @@ const App: React.FC = () => {
       if (saveResult.success) {
           setLastSyncTime(new Date()); 
           if (unsavedChangesCounterRef.current === currentCounter) {
+              hasUnsavedChangesRef.current = false;
               setHasUnsavedChanges(false); 
           }
           if (saveResult.updatedAt) setServerTimestamp(saveResult.updatedAt);
           
+          apiariesRef.current = mergedApiaries;
+          eventsRef.current = mergedEvents;
+          notesRef.current = mergedNotes;
+          deletedIdsRef.current = mergedDeletedIds;
+
           setApiaries(mergedApiaries);
           setCalendarEvents(mergedEvents);
           setSeasonalNotes(mergedNotes);
+          setDeletedIds(mergedDeletedIds);
           logger.log("Sincronizzazione forzata completata con successo", "info");
       } else {
           throw new Error("Save failed on server");
@@ -801,33 +913,81 @@ const App: React.FC = () => {
       return;
     }
 
+    const targetTeamId = forcedTeamId !== undefined ? forcedTeamId : activeTeamIdRef.current;
+    const expectedScopeKey = targetTeamId ? `team:${targetTeamId}` : `user:${userId}:personal`;
+    if (scopeKey !== expectedScopeKey) {
+      logger.log(`Sync skipped: scopeKey (${scopeKey}) not yet aligned with target (${expectedScopeKey})`, "info");
+      return;
+    }
+
     setIsSyncing(true);
     isSyncingRef.current = true;
     try {
-      const { data: cloudData, updatedAt } = await withTimeout(loadFromCloud(userId, forcedTeamId), 120000);
-      if (forcedTeamId !== activeTeamIdRef.current) return;
-      if (cloudData) {
-        const mergedDeletedIds = Array.from(new Set([...deletedIdsRef.current, ...(cloudData.deletedIds || [])]));
-        const mergedApiaries = smartMergeApiaries(apiariesRef.current, cloudData.apiaries || [], mergedDeletedIds);
-        const mergedEvents = smartMergeEvents(eventsRef.current, cloudData.calendarEvents || [], mergedDeletedIds);
-        const mergedNotes = smartMergeNotes(notesRef.current, cloudData.seasonalNotes || [], mergedDeletedIds);
+      const { data: cloudData, updatedAt, notFound, error } = await withTimeout(loadFromCloud(userId, targetTeamId), 120000);
+      if (targetTeamId !== activeTeamIdRef.current || error) return;
 
-        setApiaries(mergedApiaries);
-        setCalendarEvents(mergedEvents);
-        setSeasonalNotes(mergedNotes);
-        setDeletedIds(mergedDeletedIds);
+      if (cloudData) {
+        if (hasUnsavedChangesRef.current) {
+          const mergedDeletedIds = Array.from(new Set([...deletedIdsRef.current, ...(cloudData.deletedIds || [])]));
+          const mergedApiaries = smartMergeApiaries(apiariesRef.current, cloudData.apiaries || [], mergedDeletedIds);
+          const mergedEvents = smartMergeEvents(eventsRef.current, cloudData.calendarEvents || [], mergedDeletedIds);
+          const mergedNotes = smartMergeNotes(notesRef.current, cloudData.seasonalNotes || [], mergedDeletedIds);
+
+          apiariesRef.current = mergedApiaries;
+          eventsRef.current = mergedEvents;
+          notesRef.current = mergedNotes;
+          deletedIdsRef.current = mergedDeletedIds;
+
+          setApiaries(mergedApiaries);
+          setCalendarEvents(mergedEvents);
+          setSeasonalNotes(mergedNotes);
+          setDeletedIds(mergedDeletedIds);
+        } else {
+          const nextApiaries = cloudData.apiaries || [];
+          const nextEvents = cloudData.calendarEvents || [];
+          const nextNotes = cloudData.seasonalNotes || [];
+          const nextDeletedIds = cloudData.deletedIds || [];
+
+          apiariesRef.current = nextApiaries;
+          eventsRef.current = nextEvents;
+          notesRef.current = nextNotes;
+          deletedIdsRef.current = nextDeletedIds;
+
+          setApiaries(nextApiaries);
+          setCalendarEvents(nextEvents);
+          setSeasonalNotes(nextNotes);
+          setDeletedIds(nextDeletedIds);
+        }
         
-        if (cloudData.savedLocation) setSavedLocation(cloudData.savedLocation);
+        savedLocationRef.current = cloudData.savedLocation ?? null;
+        setSavedLocation(cloudData.savedLocation ?? null);
         if (updatedAt) setServerTimestamp(updatedAt);
+        setLastSyncTime(new Date());
+      } else if (notFound && !hasUnsavedChangesRef.current) {
+        apiariesRef.current = [];
+        eventsRef.current = [];
+        notesRef.current = [];
+        deletedIdsRef.current = [];
+        savedLocationRef.current = null;
+
+        setApiaries([]);
+        setCalendarEvents([]);
+        setSeasonalNotes([]);
+        setDeletedIds([]);
+        setSavedLocation(null);
         setLastSyncTime(new Date());
       }
     } catch (e: any) {
-      logger.log(`Sync Error: ${e.message} | userId: ${userId} | teamId: ${forcedTeamId}`, 'error');
+      logger.log(`Sync Error: ${e.message} | userId: ${userId} | teamId: ${targetTeamId}`, 'error');
     } finally {
       setIsSyncing(false);
       isSyncingRef.current = false;
     }
-  }, [setApiaries, setCalendarEvents, setSeasonalNotes, setDeletedIds, setSavedLocation, withTimeout, user?.plan]);
+  }, [scopeKey, setApiaries, setCalendarEvents, setSeasonalNotes, setDeletedIds, setSavedLocation, withTimeout, user?.plan, isOnline]);
+
+  useEffect(() => {
+    handleCloudSyncRef.current = handleCloudSync;
+  }, [handleCloudSync]);
 
   const switchScope = async (nextTeamId: string | null) => {
     if (nextTeamId === activeTeamId) return;
@@ -842,32 +1002,32 @@ const App: React.FC = () => {
     isSwitchingRef.current = true;
     setIsSaving(false);
     isSavingRef.current = false;
+    hasUnsavedChangesRef.current = false;
     setHasUnsavedChanges(false);
 
-    // Hard reset states e Ref
-    setApiaries([]);
-    setCalendarEvents([]);
-    setSeasonalNotes([]);
-    setDeletedIds([]);
+    // Svuota subito i ref in memoria per evitare contaminazioni tra contesti
     apiariesRef.current = [];
     eventsRef.current = [];
     notesRef.current = [];
+    savedLocationRef.current = null;
     deletedIdsRef.current = [];
-    
+
     setSelectedApiary(null);
     setSelectedHive(null);
     
     setCurrentTeamId(nextTeamId);
-    setActiveTeamId(nextTeamId);
     activeTeamIdRef.current = nextTeamId;
+    setActiveTeamId(nextTeamId);
     
     // Al cambio scope, resettiamo la cronologia per evitare confusione
     window.history.replaceState({ view: 'dashboard', apiaryId: null, hiveId: null }, '');
 
     setTimeout(() => {
       isSwitchingRef.current = false;
-      if (currentUserId) handleCloudSync(currentUserId, nextTeamId);
-    }, 500);
+      if (currentUserId && handleCloudSyncRef.current) {
+        handleCloudSyncRef.current(currentUserId, nextTeamId);
+      }
+    }, 250);
   };
 
   // --- BOOTSTRAP ---
@@ -886,24 +1046,23 @@ const App: React.FC = () => {
       // Ritorno da Stripe Checkout dopo pagamento riuscito
       const paymentStatus = urlParams.get('payment') || urlParams.get('payment_success');
       const paidPlanParam = urlParams.get('plan');
-      if (paymentStatus === 'success' || paymentStatus === 'true') {
-        const targetPlan = (paidPlanParam === 'team' || paidPlanParam === 'enterprise' || paidPlanParam === 'premium') 
-          ? paidPlanParam 
-          : 'premium';
-        const uid = localStorage.getItem('beewise-user-id');
-        if (uid) {
-          upgradeToPremium(uid, targetPlan).then((success) => {
-            if (success) {
-              localStorage.setItem(`beewise:plan:${uid}`, targetPlan);
-              setUser(prev => prev ? { ...prev, plan: targetPlan } : null);
-              setHasUnsavedChanges(true);
-              setTimeout(() => {
-                forceSync(targetPlan);
-              }, 500);
-            }
-          });
+      const isPaymentSuccessPath = window.location.pathname.startsWith('/payment-success');
+      if (isPaymentSuccessPath || paymentStatus === 'success' || paymentStatus === 'true') {
+        handlePaymentReturn(paidPlanParam);
+
+        // Se siamo in un browser Android esterno (es. dopo redirect Stripe), prova a riaprire l'app in background
+        if (!Capacitor.isNativePlatform() && /Android/i.test(navigator.userAgent)) {
+          const guardKey = 'beewise_payment_app_redirect';
+          if (!sessionStorage.getItem(guardKey)) {
+            sessionStorage.setItem(guardKey, '1');
+            const query = paidPlanParam ? `?plan=${encodeURIComponent(paidPlanParam)}` : '';
+            setTimeout(() => {
+              window.location.href = `com.beewise.diario://payment-success${query}`;
+            }, 150);
+          }
         }
-        window.history.replaceState({}, document.title, window.location.pathname);
+
+        window.history.replaceState({}, document.title, '/');
       }
     }
 
@@ -1006,15 +1165,19 @@ const App: React.FC = () => {
           
           setAvailableTeams(teams);
           
-          // Logica standard per operatori o utenti singoli
-          const storedTeam = getCurrentTeamId();
-          
-          // Verifica che il team salvato esista ancora tra quelli disponibili
-          const isValidTeam = storedTeam === 'personal' || storedTeam === null || teams.some(t => t.team_id === storedTeam);
-          const finalTeamId = (isValidTeam && storedTeam !== 'personal') ? storedTeam : null;
-          
-          if (!isValidTeam) {
-              setCurrentTeamId('personal');
+          const rawStoredTeam = localStorage.getItem('beewise-current-team-id');
+          let finalTeamId: string | null = null;
+          if (rawStoredTeam === 'personal') {
+            finalTeamId = null;
+          } else if (rawStoredTeam && teams.some(t => t.team_id === rawStoredTeam)) {
+            finalTeamId = rawStoredTeam;
+          } else {
+            const adminTeam = teams.find(t => {
+              const r = (t.role || '').toUpperCase();
+              return r === 'ADMIN' || r === 'OWNER';
+            });
+            finalTeamId = adminTeam ? adminTeam.team_id : null;
+            setCurrentTeamId(finalTeamId);
           }
           
           setActiveTeamId(finalTeamId);
@@ -1115,15 +1278,19 @@ const App: React.FC = () => {
             
             setAvailableTeams(teams);
             
-            // Logica standard per operatori o utenti singoli
-            const storedTeam = getCurrentTeamId();
-            
-            // Verifica che il team salvato esista ancora tra quelli disponibili
-            const isValidTeam = storedTeam === null || teams.some(t => t.team_id === storedTeam);
-            const finalTeamId = isValidTeam ? storedTeam : null;
-            
-            if (!isValidTeam) {
-                setCurrentTeamId(null);
+            const rawStoredTeam = localStorage.getItem('beewise-current-team-id');
+            let finalTeamId: string | null = null;
+            if (rawStoredTeam === 'personal') {
+              finalTeamId = null;
+            } else if (rawStoredTeam && teams.some(t => t.team_id === rawStoredTeam)) {
+              finalTeamId = rawStoredTeam;
+            } else {
+              const adminTeam = teams.find(t => {
+                const r = (t.role || '').toUpperCase();
+                return r === 'ADMIN' || r === 'OWNER';
+              });
+              finalTeamId = adminTeam ? adminTeam.team_id : null;
+              setCurrentTeamId(finalTeamId);
             }
             
             setActiveTeamId(finalTeamId);
@@ -1137,6 +1304,13 @@ const App: React.FC = () => {
           }
           
           if (event === 'SIGNED_OUT') {
+            apiariesRef.current = [];
+            eventsRef.current = [];
+            notesRef.current = [];
+            deletedIdsRef.current = [];
+            savedLocationRef.current = null;
+            hasUnsavedChangesRef.current = false;
+            setHasUnsavedChanges(false);
             setUser(null); setCurrentUserId(null); setApiaries([]); setCalendarEvents([]); setSeasonalNotes([]); setDeletedIds([]); setAvailableTeams([]); setActiveTeamId(null); activeTeamIdRef.current = null;
             setIsDoubleLogin(false);
           }
@@ -1150,17 +1324,19 @@ const App: React.FC = () => {
     return () => { mounted = false; subscription.unsubscribe(); };
   }, []);
 
-  // --- AUTO-SYNC ON USER CHANGE (CRUCIALE PER PROFILO PERSONALE) ---
+  // --- AUTO-SYNC ON USER OR SCOPE CHANGE ---
   useEffect(() => {
-    if (currentUserId && isOnline) {
-      // Inseriamo un piccolo ritardo di sicurezza (500ms) per essere certi che la sessione 
+    if (!loading && currentUserId && isOnline && !isSwitchingRef.current) {
+      // Inseriamo un piccolo ritardo di sicurezza per essere certi che la sessione 
       // Supabase sia stata iniettata correttamente negli header delle richieste fetch.
       const timer = setTimeout(() => {
-        handleCloudSync(currentUserId, activeTeamIdRef.current);
-      }, 500);
+        if (!isSwitchingRef.current) {
+          handleCloudSync(currentUserId, activeTeamId);
+        }
+      }, 300);
       return () => clearTimeout(timer);
     }
-  }, [currentUserId, handleCloudSync, isOnline]);
+  }, [loading, currentUserId, activeTeamId, handleCloudSync, isOnline]);
 
   // --- SYNC PLAN ON APP FOCUS / VISIBILITY (ES. RITORNO DA STRIPE CHECKOUT) ---
   useEffect(() => {
@@ -1320,13 +1496,20 @@ const App: React.FC = () => {
         if (saveResult.success) {
             setLastSyncTime(new Date()); 
             if (unsavedChangesCounterRef.current === currentCounter) {
+                hasUnsavedChangesRef.current = false;
                 setHasUnsavedChanges(false); 
             }
             if (saveResult.updatedAt) setServerTimestamp(saveResult.updatedAt);
             
+            apiariesRef.current = mergedApiaries;
+            eventsRef.current = mergedEvents;
+            notesRef.current = mergedNotes;
+            deletedIdsRef.current = mergedDeletedIds;
+
             setApiaries(mergedApiaries);
             setCalendarEvents(mergedEvents);
             setSeasonalNotes(mergedNotes);
+            setDeletedIds(mergedDeletedIds);
         } else {
             // Se fallisce (es. timeout), riprova tra poco
             if (isMounted) timer = setTimeout(attemptSave, 5000);
@@ -1376,12 +1559,24 @@ const App: React.FC = () => {
         }
     });
     
+    // Svuota subito tutti i ref in memoria
+    apiariesRef.current = [];
+    eventsRef.current = [];
+    notesRef.current = [];
+    deletedIdsRef.current = [];
+    savedLocationRef.current = null;
+    hasUnsavedChangesRef.current = false;
+    activeTeamIdRef.current = null;
+
     // Forza l'aggiornamento degli stati React per svuotare la UI immediatamente
     setUser(null);
     setCurrentUserId(null);
+    setActiveTeamId(null);
+    setAvailableTeams([]);
     setApiaries([]);
     setCalendarEvents([]);
     setSeasonalNotes([]);
+    setDeletedIds([]);
     setTeamMembers([]);
     setHasUnsavedChanges(false); 
     navigateTo('dashboard'); 
@@ -1447,10 +1642,24 @@ const App: React.FC = () => {
     setIsApiaryModalOpen(false); setApiaryToEdit(null); triggerSave();
   };
 
-  const handleSaveHive = (hive: Omit<Hive, 'id' | 'inspections'>) => {
+  const handleSaveHive = (hivesData: Omit<Hive, 'id' | 'inspections'> | Omit<Hive, 'id' | 'inspections'>[]) => {
     if (!selectedApiary) return;
-    const hiveToSave: Hive = hiveToEdit ? { ...hiveToEdit, ...hive } : { ...hive, id: crypto.randomUUID(), inspections: [] };
-    const nextApiaries = apiaries.map(a => a.id !== selectedApiary.id ? a : { ...a, hives: hiveToEdit ? a.hives.map(h => h.id === hiveToEdit.id ? hiveToSave : h) : [...a.hives, hiveToSave] });
+    const hivesArray = Array.isArray(hivesData) ? hivesData : [hivesData];
+
+    let nextHives: Hive[];
+    if (hiveToEdit && hivesArray.length === 1) {
+      const hiveToSave: Hive = { ...hiveToEdit, ...hivesArray[0] };
+      nextHives = selectedApiary.hives.map(h => h.id === hiveToEdit.id ? hiveToSave : h);
+    } else {
+      const newHives: Hive[] = hivesArray.map(h => ({
+        ...h,
+        id: crypto.randomUUID(),
+        inspections: []
+      }));
+      nextHives = [...selectedApiary.hives, ...newHives];
+    }
+
+    const nextApiaries = apiaries.map(a => a.id !== selectedApiary.id ? a : { ...a, hives: nextHives });
     setApiaries(nextApiaries);
     apiariesRef.current = nextApiaries;
     setIsHiveModalOpen(false); setHiveToEdit(null); triggerSave();
@@ -1734,6 +1943,29 @@ const App: React.FC = () => {
     );
   }
 
+  if (deepLinkInviteToken) {
+    return (
+      <AcceptInvite
+        initialToken={deepLinkInviteToken}
+        onDone={async () => {
+          setDeepLinkInviteToken(null);
+          localStorage.removeItem('pending_invite_token');
+          const uid = currentUserId || localStorage.getItem('beewise-user-id');
+          if (uid) {
+            const freshPlan = await fetchUserPlan(uid);
+            if (freshPlan) {
+              localStorage.setItem(`beewise:plan:${uid}`, freshPlan);
+              setUser(prev => prev ? { ...prev, plan: freshPlan } : null);
+            }
+            const teamsList = await fetchTeamsForUser(uid);
+            setAvailableTeams(teamsList);
+          }
+          navigateTo('dashboard');
+        }}
+      />
+    );
+  }
+
   return (
     <div className="h-screen overflow-hidden bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 flex flex-col">
       <Header 
@@ -1750,6 +1982,7 @@ const App: React.FC = () => {
         onSync={forceSync}
         onOpenPremium={() => setIsPremiumModalOpen(true)}
         onFeedbackClick={() => setIsFeedbackModalOpen(true)}
+        onTipsClick={() => setIsTipsModalOpen(true)}
       />
       
       <main ref={mainRef} className="container mx-auto px-4 py-6 pb-24 flex-grow overflow-y-auto custom-scrollbar">
@@ -1825,8 +2058,8 @@ const App: React.FC = () => {
             {view === 'seasonalNotes' && <ToolsView apiaries={activeApiaries} onBack={() => window.history.back()} notes={activeNotes} onSaveNote={(n) => { setSeasonalNotes(prev => { const ex = prev.find(x=>x.id===n.id); return ex ? prev.map(x=>x.id===n.id?n:x) : [...prev, n]; }); triggerSave(); }} isBloomModalOpen={isBloomModalOpen} setIsBloomModalOpen={setIsBloomModalOpen} isScrolling={isScrolling} />}
             {view === 'bilancia' && <ScaleDashboard apiaries={activeApiaries} onBack={() => window.history.back()} />}
             {view === 'nfc' && <NfcView apiaries={activeApiaries} onBack={() => window.history.back()} onOpenConfig={() => setIsNfcModalOpen(true)} onRemoveTag={(hid) => { setApiaries(prev => prev.map(a => ({ ...a, hives: a.hives.map(h => h.id === hid ? { ...h, nfcTagId: undefined } : h) }))); triggerSave(); }} isScrolling={isScrolling} onTagScanned={(id) => { const a = apiaries.find(ap => ap.hives.some(h => h.nfcTagId?.toUpperCase() === id.toUpperCase())); if (a) { const h = a.hives.find(hv => hv.nfcTagId?.toUpperCase() === id.toUpperCase())!; setSelectedApiary(a); setSelectedHive(h); navigateTo('hiveDetails', a.id, h.id); } else alert('Tag non associato.'); }} />}
-            {view === 'profile' && <ProfileView user={user} apiaries={activeApiaries} onBack={() => window.history.back()} onLogout={handleLogout} onOpenMultiAccess={() => setIsPremiumModalOpen(true)} onPlanChanged={(newPlan) => { if (user) setUser({ ...user, plan: newPlan as any }); }} />}
-            {view === 'teamManagement' && <TeamManagement onBack={() => window.history.back()} user={user} teamMembers={teamMembers} onUpdateMembers={setTeamMembers} onOpenPremium={() => setIsPremiumModalOpen(true)} onOpenMultiAccess={() => setIsPremiumModalOpen(true)} />}
+            {view === 'profile' && <ProfileView user={user} apiaries={activeApiaries} onBack={() => window.history.back()} onLogout={handleLogout} onOpenMultiAccess={() => setIsPremiumModalOpen(true)} onPlanChanged={(newPlan) => { if (user) setUser({ ...user, plan: newPlan as any }); }} onOpenTips={() => setIsTipsModalOpen(true)} />}
+            {view === 'teamManagement' && <TeamManagement onBack={() => window.history.back()} user={user} teamMembers={teamMembers} onUpdateMembers={setTeamMembers} onOpenPremium={() => setIsPremiumModalOpen(true)} onOpenMultiAccess={() => setIsPremiumModalOpen(true)} activeTeamId={activeTeamId} onSwitchScope={switchScope} />}
             {view === 'trash' && <TrashView apiaries={apiaries} events={calendarEvents} onRestore={handleRestore} onBack={() => window.history.back()} />}
           </>
         )}
@@ -2109,6 +2342,59 @@ const App: React.FC = () => {
         onClose={() => setIsFeedbackModalOpen(false)} 
         user={user} 
       />
+
+      <TipsModal
+        isOpen={isTipsModalOpen}
+        onClose={() => setIsTipsModalOpen(false)}
+      />
+
+      {paymentReturnModal && (
+        <Modal
+          isOpen={true}
+          onClose={() => setPaymentReturnModal(null)}
+          title="🎉 Pagamento Completato"
+        >
+          <div className="space-y-4 text-center py-2">
+            <p className="text-sm text-slate-700 dark:text-slate-200 leading-relaxed">
+              Il tuo piano{' '}
+              <strong className="text-amber-600 dark:text-amber-400">
+                {paymentReturnModal.plan === 'enterprise'
+                  ? 'Azienda'
+                  : paymentReturnModal.plan === 'team'
+                    ? 'Piccolo Team'
+                    : 'Singolo / Premium'}
+              </strong>{' '}
+              è ora attivo!
+            </p>
+
+            {paymentReturnModal.isWebBridge ? (
+              <div className="space-y-2.5 pt-1">
+                <a
+                  href={`com.beewise.diario://payment-success?plan=${encodeURIComponent(paymentReturnModal.plan)}`}
+                  className="block w-full py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl shadow-md transition text-sm"
+                >
+                  📱 Apri nell'App Diario Apistico
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setPaymentReturnModal(null)}
+                  className="w-full py-2.5 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold rounded-xl hover:bg-slate-200 dark:hover:bg-slate-600 transition text-sm"
+                >
+                  Continua sul Web
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setPaymentReturnModal(null)}
+                className="w-full py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl shadow-md transition text-sm"
+              >
+                Vai alla Dashboard
+              </button>
+            )}
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

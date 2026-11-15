@@ -17,6 +17,7 @@ interface HeaderProps {
     onSync?: () => void;
     onOpenPremium?: () => void;
     onFeedbackClick?: () => void;
+    onTipsClick?: () => void;
 }
 
 const Header: React.FC<HeaderProps> = ({ 
@@ -32,7 +33,8 @@ const Header: React.FC<HeaderProps> = ({
     isOnline = true,
     onSync,
     onOpenPremium,
-    onFeedbackClick
+    onFeedbackClick,
+    onTipsClick
 }) => {
     console.log("DEBUG: Header user prop =", user, "loading =", loading);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -251,6 +253,15 @@ const Header: React.FC<HeaderProps> = ({
                                             <div className="flex items-center gap-2">
                                                 <UsersIcon className="w-4 h-4"/> Gestione Team
                                             </div>
+                                        </button>
+                                        <button 
+                                            onClick={() => { 
+                                                setIsMenuOpen(false); 
+                                                if (onTipsClick) onTipsClick();
+                                            }}
+                                            className="w-full text-left px-4 py-2.5 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600 flex items-center gap-2"
+                                        >
+                                            <span className="text-base">💡</span> Trucchi & Consigli
                                         </button>
                                         <button 
                                             onClick={() => { 

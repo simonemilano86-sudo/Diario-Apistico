@@ -111,7 +111,7 @@ const InspectionModal: React.FC<InspectionModalProps> = ({ isOpen, onClose, onSa
 
     const occupiedFramesOptions = Array.from({ length: 10 }, (_, i) => i + 1);
     const broodFramesOptions = Array.from({ length: 11 }, (_, i) => i);
-    const diaphragmOptions = Array.from({ length: 6 }, (_, i) => i);
+    const diaphragmOptions = [0, 1, 2];
     
     // Liste ordinate alfabeticamente (con "Nessuna" sempre per primo)
     const diseaseOptions = [
@@ -478,15 +478,25 @@ const InspectionModal: React.FC<InspectionModalProps> = ({ isOpen, onClose, onSa
                     </div>
 
                     <div>
-                        <div className="flex justify-between items-start mb-2">
+                        <div className="flex justify-between items-start mb-1.5">
                             <label htmlFor="actions" className="block text-sm font-medium text-slate-700 dark:text-slate-300">Azioni Intraprese/Note Generali</label>
                             <label className="relative inline-flex items-center cursor-pointer">
                                 <input type="checkbox" id="applyActionsToAll" checked={applyActionsToAll} onChange={(e) => setApplyActionsToAll(e.target.checked)} className="sr-only peer" />
                                 <div className="w-9 h-5 relative flex-shrink-0 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-slate-600 peer-checked:bg-blue-600"></div>
-                                <span className="ml-2 text-xs text-slate-600 dark:text-slate-400">tutte le arnie</span>
+                                <span className="ml-2 text-xs font-medium text-slate-700 dark:text-slate-300">Applica a tutte le arnie</span>
                             </label>
                         </div>
-                        <textarea id="actions" name="actions" rows={3} value={inspection.actions} onChange={handleChange} className="w-full border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white rounded-md" placeholder="es. Aggiunto melario..."></textarea>
+                        {applyActionsToAll ? (
+                            <p className="text-[11px] text-blue-700 dark:text-blue-300 mb-2 bg-blue-50 dark:bg-blue-950/40 p-2 rounded-md border border-blue-200 dark:border-blue-900/50 flex items-center gap-1.5">
+                                <span>💡</span>
+                                <span>Copia note e azioni su tutte le arnie dell'apiario (es. posa candito o gocciolato).</span>
+                            </p>
+                        ) : (
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-1.5">
+                                Attiva "Applica a tutte le arnie" per registrare candito, nutrizione o trattamenti a tappeto.
+                            </p>
+                        )}
+                        <textarea id="actions" name="actions" rows={3} value={inspection.actions} onChange={handleChange} className="w-full border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white rounded-md" placeholder="es. Aggiunto melario, posato candito..."></textarea>
                     </div>
 
                     <div className="border border-slate-200 dark:border-slate-700 rounded-md p-4 bg-slate-50 dark:bg-slate-800/50">

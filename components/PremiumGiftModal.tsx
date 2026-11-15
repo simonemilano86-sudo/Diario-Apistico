@@ -28,7 +28,7 @@ const PremiumGiftModal: React.FC<PremiumGiftModalProps> = ({ isOpen, onClose }) 
 
         try {
             const token = crypto.randomUUID();
-            const link = `https://app.diarioapistico.com/#/accept-invite?token=${token}&email=${encodeURIComponent(email)}`;
+            const link = `https://app.diarioapistico.com/accept-invite?token=${token}&email=${encodeURIComponent(email)}`;
             setInviteLink(link);
 
             await sendPremiumInvite({ email, name, token, duration });

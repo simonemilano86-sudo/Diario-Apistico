@@ -71,16 +71,66 @@ serve(async (req: Request) => {
         const customerEmail = session.customer_details?.email || session.customer_email;
         const clientReferenceId = session.client_reference_id; // Passato dall'app se presente
         
-        // Riconoscimento del piano (da metadata o fallback 'premium')
-        let targetPlan: 'premium' | 'team' | 'enterprise' = 'premium';
-        if (session.metadata?.plan) {
-          const p = session.metadata.plan.toLowerCase();
-          if (p === 'team' || p === 'enterprise' || p === 'premium') {
-            targetPlan = p;
+        // Riconoscimento del piano:
+        // 1) session.metadata.plan
+        // 2) price/product metadata o nome prodotto da Stripe line_items (per Payment Links)
+        // 3) fallback su importo (amount_total) -> fallback finale 'premium'
+        const parsePlan = (raw?: string | null): 'premium' | 'team' | 'enterprise' | null => {
+          const p = raw?.toLowerCase().trim();
+          if (p === 'team' || p === 'enterprise' || p === 'premium') return p;
+          return null;
+        };
+
+        let targetPlan: 'premium' | 'team' | 'enterprise' | null = parsePlan(session.metadata?.plan);
+
+        if (!targetPlan && stripeKey && session.id) {
+          try {
+            const lineItems = await stripe.checkout.sessions.listLineItems(session.id, {
+              limit: 5,
+              expand: ['data.price.product'],
+            });
+
+            for (const item of lineItems.data) {
+              const price = item.price as Stripe.Price | null;
+              const product = (price?.product && typeof price.product !== 'string')
+                ? (price.product as Stripe.Product)
+                : null;
+
+              targetPlan =
+                parsePlan(price?.metadata?.plan) ||
+                parsePlan(product?.metadata?.plan);
+
+              if (!targetPlan) {
+                const label = `${product?.name || ''} ${item.description || ''}`.toLowerCase();
+                if (label.includes('azienda') || label.includes('enterprise')) {
+                  targetPlan = 'enterprise';
+                } else if (label.includes('team')) {
+                  targetPlan = 'team';
+                } else if (label.includes('singolo') || label.includes('premium')) {
+                  targetPlan = 'premium';
+                }
+              }
+
+              if (targetPlan) break;
+            }
+          } catch (lineErr: any) {
+            console.warn('⚠️ Impossibile leggere line_items da Stripe:', lineErr?.message || lineErr);
           }
         }
 
-        console.log(`💳 Pagamento completato! Email: ${customerEmail}, UserID: ${clientReferenceId}, Piano: ${targetPlan}`);
+        if (!targetPlan && typeof session.amount_total === 'number' && session.amount_total > 0) {
+          if (session.amount_total >= 900) {
+            targetPlan = 'enterprise';
+          } else if (session.amount_total >= 450) {
+            targetPlan = 'team';
+          } else {
+            targetPlan = 'premium';
+          }
+        }
+
+        const resolvedPlan: 'premium' | 'team' | 'enterprise' = targetPlan || 'premium';
+
+        console.log(`💳 Pagamento completato! Email: ${customerEmail}, UserID: ${clientReferenceId}, Piano: ${resolvedPlan}`);
 
         let resolvedUserId = clientReferenceId;
 
@@ -124,14 +174,14 @@ serve(async (req: Request) => {
           });
         }
 
-        console.log(`✅ Assegno piano ${targetPlan} all'utente ID: ${resolvedUserId}`);
+        console.log(`✅ Assegno piano ${resolvedPlan} all'utente ID: ${resolvedUserId}`);
 
         // Aggiorna o inserisce nella tabella user_quotas
         const { error: quotaError } = await supabaseAdmin
           .from('user_quotas')
           .upsert({
             user_id: resolvedUserId,
-            plan: targetPlan,
+            plan: resolvedPlan,
             tokens_used: 0,
             last_reset: new Date().toISOString(),
           }, { onConflict: 'user_id' });
@@ -145,13 +195,13 @@ serve(async (req: Request) => {
         try {
           await supabaseAdmin
             .from('users')
-            .update({ plan: targetPlan })
+            .update({ plan: resolvedPlan })
             .eq('id', resolvedUserId);
         } catch (_) {
           // Ignora se la colonna non esiste
         }
 
-        console.log(`🎉 Utente ${resolvedUserId} (${customerEmail}) promosso con successo a ${targetPlan}!`);
+        console.log(`🎉 Utente ${resolvedUserId} (${customerEmail}) promosso con successo a ${resolvedPlan}!`);
 
         // --- SISTEMA REFERRAL: PREMIA L'INVITANTE (+1 MESE GRATIS) ---
         try {
