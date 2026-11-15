@@ -17,6 +17,7 @@ import {
   getStripeSubscriptionStatus,
   cancelStripeSubscriptionInApp,
   reactivateStripeSubscriptionInApp,
+  openMarketingWebsite,
   StripeSubscriptionInfo,
 } from '../services/billingService';
 
@@ -468,7 +469,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({
           <div className="flex flex-wrap items-center gap-3 pt-2">
             <button
               type="button"
-              onClick={() => window.open('https://diarioapistico.com', '_blank', 'noopener,noreferrer')}
+              onClick={() => openMarketingWebsite((user as any)?.id || null, user?.email || null)}
               className="flex-1 sm:flex-none px-5 py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-white hover:bg-amber-600 transition shadow-sm flex items-center justify-center gap-2 cursor-pointer"
             >
               <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">

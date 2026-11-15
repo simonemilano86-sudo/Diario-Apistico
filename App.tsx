@@ -104,7 +104,7 @@ const App: React.FC = () => {
   const [currentUserId, setCurrentUserId] = useLocalStorage<string | null>('beewise-user-id', null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [deepLinkInviteToken, setDeepLinkInviteToken] = useState<string | null>(null);
-  const [paymentReturnModal, setPaymentReturnModal] = useState<{ plan: string; isWebBridge: boolean } | null>(null);
+  const [paymentReturnModal, setPaymentReturnModal] = useState<{ plan: string } | null>(null);
 
   useEffect(() => {
     const handleOnline = () => {
@@ -519,10 +519,6 @@ const App: React.FC = () => {
   }, []);
 
   const handlePaymentReturn = useCallback(async (rawPlan?: string | null, checkoutSessionId?: string | null) => {
-    if (checkoutSessionId) {
-      linkStripeCheckoutSession(checkoutSessionId);
-    }
-
     const normalizedHint = rawPlan === 'singolo'
       ? 'premium'
       : rawPlan === 'azienda'
@@ -533,34 +529,78 @@ const App: React.FC = () => {
         ? normalizedHint
         : null;
 
-    const uid = currentUserId || localStorage.getItem('beewise-user-id');
-    let finalPlan: 'free' | 'premium' | 'team' | 'enterprise' = hintedPlan || 'premium';
-
+    let uid = currentUserId || localStorage.getItem('beewise-user-id');
     if (uid) {
-      const dbPlan = await fetchUserPlan(uid);
-      if (dbPlan && dbPlan !== 'free') {
-        finalPlan = dbPlan;
-      } else if (hintedPlan) {
-        const upgraded = await upgradeToPremium(uid, hintedPlan);
-        if (upgraded) {
-          finalPlan = hintedPlan;
-        }
-      }
-
-      if (finalPlan !== 'free') {
-        localStorage.setItem(`beewise:plan:${uid}`, finalPlan);
-        setUser(prev => prev ? { ...prev, plan: finalPlan } : null);
-        setIsDoubleLogin(false);
-        setHasUnsavedChanges(true);
+      try {
+        uid = JSON.parse(uid);
+      } catch {
+        // plain string
       }
     }
 
-    const isAndroidMobileWeb = !Capacitor.isNativePlatform() && /Android/i.test(navigator.userAgent);
+    // Se l'utente ha acquistato sul sito esterno prima di fare il login nell'app,
+    // salviamo temporaneamente i dati e apriamo il login così il piano si collega appena entra
+    if (!uid) {
+      localStorage.setItem(
+        'beewise_pending_payment_return',
+        JSON.stringify({
+          plan: hintedPlan || 'premium',
+          sessionId: checkoutSessionId || null,
+          ts: Date.now(),
+        })
+      );
+      setAuthModalMode('signin');
+      setIsAuthModalOpen(true);
+      return;
+    }
+
+    let linkedPlan: 'premium' | 'team' | 'enterprise' | null = null;
+    if (checkoutSessionId) {
+      linkedPlan = await linkStripeCheckoutSession(checkoutSessionId);
+    }
+
+    let finalPlan: 'free' | 'premium' | 'team' | 'enterprise' =
+      linkedPlan || hintedPlan || 'premium';
+
+    const dbPlan = await fetchUserPlan(uid);
+    if (dbPlan && dbPlan !== 'free') {
+      finalPlan = dbPlan;
+    } else if (linkedPlan || hintedPlan) {
+      const target = (linkedPlan || hintedPlan)!;
+      const upgraded = await upgradeToPremium(uid, target);
+      if (upgraded) {
+        finalPlan = target;
+      }
+    }
+
+    if (finalPlan !== 'free') {
+      localStorage.setItem(`beewise:plan:${uid}`, finalPlan);
+      setUser(prev => prev ? { ...prev, plan: finalPlan } : null);
+      setIsDoubleLogin(false);
+      setHasUnsavedChanges(true);
+    }
+
     setPaymentReturnModal({
       plan: finalPlan,
-      isWebBridge: isAndroidMobileWeb,
     });
   }, [currentUserId, setUser]);
+
+  // Se l'utente aveva appena completato un pagamento prima di fare login, applicalo appena entra
+  useEffect(() => {
+    if (!currentUserId) return;
+    const rawPending = localStorage.getItem('beewise_pending_payment_return');
+    if (!rawPending) return;
+    localStorage.removeItem('beewise_pending_payment_return');
+
+    try {
+      const parsed = JSON.parse(rawPending);
+      if (parsed && (!parsed.ts || Date.now() - parsed.ts < 24 * 60 * 60 * 1000)) {
+        handlePaymentReturn(parsed.plan || null, parsed.sessionId || null);
+      }
+    } catch {
+      // ignore invalid JSON
+    }
+  }, [currentUserId, handlePaymentReturn]);
 
   // Listener per link NFC e Deep Links (Supabase Auth, Inviti, Ritorno Stripe)
   useEffect(() => {
@@ -1054,29 +1094,13 @@ const App: React.FC = () => {
         window.history.replaceState({}, document.title, window.location.pathname);
       }
 
-      // Ritorno da Stripe Checkout dopo pagamento riuscito
+      // Ritorno da Stripe Checkout dopo pagamento riuscito (sul web resta sul web)
       const paymentStatus = urlParams.get('payment') || urlParams.get('payment_success');
       const paidPlanParam = urlParams.get('plan');
       const checkoutSessionIdParam = urlParams.get('session_id');
       const isPaymentSuccessPath = window.location.pathname.startsWith('/payment-success');
       if (isPaymentSuccessPath || paymentStatus === 'success' || paymentStatus === 'true') {
         handlePaymentReturn(paidPlanParam, checkoutSessionIdParam);
-
-        // Se siamo in un browser Android esterno (es. dopo redirect Stripe), prova a riaprire l'app in background
-        if (!Capacitor.isNativePlatform() && /Android/i.test(navigator.userAgent)) {
-          const guardKey = 'beewise_payment_app_redirect';
-          if (!sessionStorage.getItem(guardKey)) {
-            sessionStorage.setItem(guardKey, '1');
-            const qp = new URLSearchParams();
-            if (paidPlanParam) qp.set('plan', paidPlanParam);
-            if (checkoutSessionIdParam) qp.set('session_id', checkoutSessionIdParam);
-            const query = qp.toString() ? `?${qp.toString()}` : '';
-            setTimeout(() => {
-              window.location.href = `com.beewise.diario://payment-success${query}`;
-            }, 150);
-          }
-        }
-
         window.history.replaceState({}, document.title, '/');
       }
     }
@@ -2093,7 +2117,8 @@ const App: React.FC = () => {
       <PremiumModal 
         isOpen={isPremiumModalOpen} 
         onClose={() => setIsPremiumModalOpen(false)} 
-        userId={currentUserId} 
+        userId={currentUserId}
+        userEmail={user?.email}
         onOpenMultiAccess={() => {
           setIsPremiumModalOpen(false);
           setIsMultiAccessModalOpen(true);
@@ -2367,46 +2392,28 @@ const App: React.FC = () => {
         <Modal
           isOpen={true}
           onClose={() => setPaymentReturnModal(null)}
-          title="🎉 Pagamento Completato"
+          title="🎉 Piano attivato con successo!"
         >
           <div className="space-y-4 text-center py-2">
             <p className="text-sm text-slate-700 dark:text-slate-200 leading-relaxed">
               Il tuo piano{' '}
               <strong className="text-amber-600 dark:text-amber-400">
                 {paymentReturnModal.plan === 'enterprise'
-                  ? 'Azienda'
+                  ? 'Azienda Agricola'
                   : paymentReturnModal.plan === 'team'
                     ? 'Piccolo Team'
-                    : 'Singolo / Premium'}
+                    : 'Apicoltore Singolo (Premium)'}
               </strong>{' '}
-              è ora attivo!
+              è ora attivo e pronto all'uso!
             </p>
 
-            {paymentReturnModal.isWebBridge ? (
-              <div className="space-y-2.5 pt-1">
-                <a
-                  href={`com.beewise.diario://payment-success?plan=${encodeURIComponent(paymentReturnModal.plan)}`}
-                  className="block w-full py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl shadow-md transition text-sm"
-                >
-                  📱 Apri nell'App Diario Apistico
-                </a>
-                <button
-                  type="button"
-                  onClick={() => setPaymentReturnModal(null)}
-                  className="w-full py-2.5 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold rounded-xl hover:bg-slate-200 dark:hover:bg-slate-600 transition text-sm"
-                >
-                  Continua sul Web
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setPaymentReturnModal(null)}
-                className="w-full py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl shadow-md transition text-sm"
-              >
-                Vai alla Dashboard
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setPaymentReturnModal(null)}
+              className="w-full py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl shadow-md transition text-sm cursor-pointer"
+            >
+              Continua
+            </button>
           </div>
         </Modal>
       )}

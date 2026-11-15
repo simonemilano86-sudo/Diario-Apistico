@@ -3,6 +3,7 @@ import { BackArrowIcon, PlusIcon, CheckCircleIcon, TrashIcon, MoreVerticalIcon }
 import { Role, TeamMember, User } from '../types';
 import Modal from './Modal';
 import { sendInvite } from '../services/inviteService';
+import { openMarketingWebsite } from '../services/billingService';
 import { supabase } from '../services/supabase';
 
 interface TeamManagementProps {
@@ -901,7 +902,7 @@ const TeamManagement: React.FC<TeamManagementProps> = ({
           <div className="pt-1">
             <button
               onClick={() => {
-                window.open('https://diarioapistico.com', '_blank', 'noopener,noreferrer');
+                openMarketingWebsite((user as any)?.id || null, user?.email || null);
                 setIsTeaserModalOpen(false);
               }}
               className="w-full py-3 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white rounded-xl font-bold shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer"

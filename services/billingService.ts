@@ -135,14 +135,75 @@ export async function reactivateStripeSubscriptionInApp(): Promise<StripeSubscri
   return invokeBillingAction<StripeSubscriptionInfo>({ action: 'reactivate' });
 }
 
-export async function linkStripeCheckoutSession(sessionId: string): Promise<void> {
-  if (!sessionId) return;
+export async function linkStripeCheckoutSession(
+  sessionId: string
+): Promise<'premium' | 'team' | 'enterprise' | null> {
+  if (!sessionId) return null;
   try {
-    await invokeBillingAction<{ linked: boolean }>({
+    const res = await invokeBillingAction<{
+      linked: boolean;
+      plan?: 'premium' | 'team' | 'enterprise';
+    }>({
       action: 'link_session',
       sessionId,
     });
+    return res?.plan || null;
   } catch (err) {
     console.warn('Avviso collegamento sessione Stripe:', err);
+    return null;
   }
+}
+
+export function buildMarketingWebsiteUrl(
+  explicitUserId?: string | null,
+  explicitEmail?: string | null
+): string {
+  const base = 'https://diarioapistico.com';
+  try {
+    const url = new URL(base);
+    let uid = explicitUserId || null;
+    let email = explicitEmail || null;
+
+    if (!uid) {
+      const rawUid = localStorage.getItem('beewise-user-id');
+      if (rawUid) {
+        try {
+          uid = JSON.parse(rawUid);
+        } catch {
+          uid = rawUid;
+        }
+      }
+    }
+
+    if (!email) {
+      const rawUser = localStorage.getItem('beewise:user');
+      if (rawUser) {
+        try {
+          const parsedUser = JSON.parse(rawUser);
+          if (parsedUser?.email) email = parsedUser.email;
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    if (uid && typeof uid === 'string') {
+      url.searchParams.set('uid', uid);
+    }
+    if (email && typeof email === 'string') {
+      url.searchParams.set('email', email);
+    }
+
+    return url.toString();
+  } catch {
+    return base;
+  }
+}
+
+export function openMarketingWebsite(
+  explicitUserId?: string | null,
+  explicitEmail?: string | null
+): void {
+  const targetUrl = buildMarketingWebsiteUrl(explicitUserId, explicitEmail);
+  window.open(targetUrl, '_blank', 'noopener,noreferrer');
 }

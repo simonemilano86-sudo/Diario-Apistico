@@ -55,6 +55,12 @@ function isSubCancelScheduled(sub: any): boolean {
   return Boolean(sub?.cancel_at_period_end || (sub?.cancel_at && sub?.status !== 'canceled'));
 }
 
+function parsePlanString(raw?: string | null): 'premium' | 'team' | 'enterprise' | null {
+  const p = raw?.toLowerCase().trim();
+  if (p === 'team' || p === 'enterprise' || p === 'premium') return p;
+  return null;
+}
+
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -134,7 +140,8 @@ serve(async (req: Request) => {
       httpClient: Stripe.createFetchHttpClient(),
     });
 
-    // --- AZIONE: COLLEGAMENTO AUTOMATICO SESSIONE STRIPE AL RITORNO DAL PAGAMENTO ---
+    // --- AZIONE: COLLEGAMENTO AUTOMATICO SESSIONE STRIPE + ATTIVAZIONE PIANO ---
+    // Gestisce anche acquisti con Google Pay / email diversa partiti dal sito esterno
     if (action === 'link_session') {
       const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : '';
       if (!sessionId || !userId) {
@@ -144,6 +151,14 @@ serve(async (req: Request) => {
       const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
       if (checkoutSession.status !== 'complete') {
         return json(400, { error: 'Sessione di pagamento non completata.' });
+      }
+
+      // Sicurezza: se la sessione aveva già un client_reference_id diverso da questo utente, non sovrascrivere
+      if (
+        checkoutSession.client_reference_id &&
+        checkoutSession.client_reference_id !== userId
+      ) {
+        return json(403, { error: 'Questa ricevuta appartiene già a un altro account.' });
       }
 
       const custId =
@@ -158,17 +173,58 @@ serve(async (req: Request) => {
             ? existingCust.metadata?.supabase_user_id
             : null;
 
-        // Salva l'associazione solo se non appartiene già a un altro utente diverso
-        if (!existingOwner || existingOwner === userId) {
-          await stripe.customers.update(custId, {
-            metadata: {
-              ...(existingCust && !('deleted' in existingCust) ? existingCust.metadata || {} : {}),
-              supabase_user_id: userId,
-              ...(userEmail ? { app_email: userEmail.trim().toLowerCase() } : {}),
-            },
+        if (existingOwner && existingOwner !== userId) {
+          return json(403, { error: 'Questo abbonamento risulta già collegato a un altro account.' });
+        }
+
+        await stripe.customers.update(custId, {
+          metadata: {
+            ...(existingCust && !('deleted' in existingCust) ? existingCust.metadata || {} : {}),
+            supabase_user_id: userId,
+            ...(userEmail ? { app_email: userEmail.trim().toLowerCase() } : {}),
+          },
+        });
+      }
+
+      // Determina il piano reale acquistato dai line_items della sessione
+      let detectedPlan: 'premium' | 'team' | 'enterprise' | null = parsePlanString(
+        checkoutSession.metadata?.plan
+      );
+
+      if (!detectedPlan) {
+        try {
+          const lineItems = await stripe.checkout.sessions.listLineItems(sessionId, {
+            limit: 5,
+            expand: ['data.price.product'],
           });
+          for (const item of lineItems.data) {
+            const price = item.price as Stripe.Price | null;
+            const product =
+              price?.product && typeof price.product !== 'string'
+                ? (price.product as Stripe.Product)
+                : null;
+            detectedPlan =
+              parsePlanString(price?.metadata?.plan) ||
+              parsePlanString(product?.metadata?.plan);
+
+            if (!detectedPlan) {
+              const label = `${product?.name || ''} ${item.description || ''}`.toLowerCase();
+              if (label.includes('azienda') || label.includes('enterprise')) {
+                detectedPlan = 'enterprise';
+              } else if (label.includes('team')) {
+                detectedPlan = 'team';
+              } else if (label.includes('singolo') || label.includes('premium')) {
+                detectedPlan = 'premium';
+              }
+            }
+            if (detectedPlan) break;
+          }
+        } catch (lineErr) {
+          console.warn('Avviso lettura line_items in link_session:', lineErr);
         }
       }
+
+      const resolvedPlan: 'premium' | 'team' | 'enterprise' = detectedPlan || 'premium';
 
       const subId =
         typeof checkoutSession.subscription === 'string'
@@ -179,11 +235,35 @@ serve(async (req: Request) => {
         await stripe.subscriptions.update(subId, {
           metadata: {
             supabase_user_id: userId,
+            plan: resolvedPlan,
           },
         });
       }
 
-      return json(200, { linked: true });
+      // Aggiorna anche il piano su Supabase nel caso il webhook non avesse trovato l'email Google Pay
+      if (supabaseServiceKey) {
+        const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+
+        await supabaseAdmin.from('user_quotas').upsert(
+          {
+            user_id: userId,
+            plan: resolvedPlan,
+            tokens_used: 0,
+            last_reset: new Date().toISOString(),
+          },
+          { onConflict: 'user_id' }
+        );
+
+        try {
+          await supabaseAdmin.from('users').update({ plan: resolvedPlan }).eq('id', userId);
+        } catch (_) {
+          // ignore if column absent
+        }
+      }
+
+      return json(200, { linked: true, plan: resolvedPlan });
     }
 
     // --- RICERCA CUSTOMER E ABBONAMENTO ATTIVO PER L'UTENTE ---
@@ -281,7 +361,7 @@ serve(async (req: Request) => {
       }
     }
 
-    // Salviamo supabase_user_id sul Customer e sulla Subscription per garantire il futuro webhook di ritorno a free
+    // Salviamo supabase_user_id sul Customer scelto per garantire il futuro webhook di ritorno a free
     if (userId && chosenCustomer.metadata?.supabase_user_id !== userId) {
       try {
         await stripe.customers.update(chosenCustomer.id, {
