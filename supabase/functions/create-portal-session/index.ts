@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import Stripe from "https://esm.sh/stripe@14.25.0?target=deno";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 declare const Deno: any;
 
@@ -52,6 +52,7 @@ serve(async (req: Request) => {
     const stripeKey = Deno.env.get('STRIPE_SECRET_KEY') || '';
     const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
     const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') || '';
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 
     if (!stripeKey) {
       console.error('STRIPE_SECRET_KEY mancante nei Secrets di Supabase.');
@@ -61,18 +62,46 @@ serve(async (req: Request) => {
     }
 
     const authHeader = req.headers.get('Authorization') || req.headers.get('authorization');
-    if (!authHeader) {
+    if (!authHeader || !authHeader.toLowerCase().startsWith('bearer ')) {
       return json(401, { error: 'Sessione non valida. Effettua di nuovo il login.' });
     }
 
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    if (!token) {
+      return json(401, { error: 'Token di autenticazione mancante. Effettua di nuovo il login.' });
+    }
+
     const userClient = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } },
+      global: { headers: { Authorization: `Bearer ${token}` } },
+      auth: { persistSession: false, autoRefreshToken: false },
     });
 
-    const { data: userData, error: userErr } = await userClient.auth.getUser();
-    const user = userData?.user;
-    if (userErr || !user || !user.email) {
-      return json(401, { error: 'Utente non autenticato o email mancante.' });
+    // Passiamo esplicitamente il JWT a getUser(token) per evitare sessione locale assente su Deno
+    const { data: userData, error: userErr } = await userClient.auth.getUser(token);
+    let userEmail: string | null =
+      userData?.user?.email || userData?.user?.user_metadata?.email || null;
+
+    // Fallback tramite Service Role se GoTrue non ha restituito l'email direttamente ma il token è valido
+    if ((!userEmail || userErr) && supabaseServiceKey) {
+      try {
+        const adminClient = createClient(supabaseUrl, supabaseServiceKey, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        const { data: adminUserData, error: adminErr } = await adminClient.auth.getUser(token);
+        if (!adminErr && adminUserData?.user) {
+          userEmail =
+            adminUserData.user.email || adminUserData.user.user_metadata?.email || null;
+        }
+      } catch (fallbackErr) {
+        console.warn('Fallback adminClient.auth.getUser fallito:', fallbackErr);
+      }
+    }
+
+    if (!userEmail) {
+      console.error('Autenticazione fallita in create-portal-session:', userErr?.message || 'email assente');
+      return json(401, {
+        error: 'Sessione scaduta o utente non autenticato. Esci e rientra nell’account, poi riprova.',
+      });
     }
 
     const body = await req.json().catch(() => ({}));
@@ -83,7 +112,7 @@ serve(async (req: Request) => {
       httpClient: Stripe.createFetchHttpClient(),
     });
 
-    const rawEmail = user.email.trim();
+    const rawEmail = userEmail.trim();
     const lowerEmail = rawEmail.toLowerCase();
 
     // Cerchiamo i clienti Stripe per email (provando prima esatta, poi minuscola se diversa)
@@ -99,7 +128,7 @@ serve(async (req: Request) => {
     if (customerCandidates.length === 0) {
       return json(404, {
         error:
-          'Nessun abbonamento Stripe trovato per questa email. Se il piano è stato attivato manualmente o tramite invito/regalo, non è gestibile dal portale di fatturazione.',
+          'Nessun abbonamento Stripe attivo trovato per questa email. Se il piano è stato attivato manualmente o tramite codice regalo, non richiede annullamento su Stripe.',
       });
     }
 
@@ -142,7 +171,7 @@ serve(async (req: Request) => {
     if (msg.toLowerCase().includes('no configuration provided')) {
       return json(500, {
         error:
-          'Il Portale Clienti Stripe non è ancora stato attivato nella Dashboard Stripe (Impostazioni → Fatturazione → Portale clienti → Salva).',
+          'Il Portale Clienti Stripe non è ancora stato salvato nella Dashboard Stripe (Impostazioni → Fatturazione → Portale clienti → Salva).',
       });
     }
 

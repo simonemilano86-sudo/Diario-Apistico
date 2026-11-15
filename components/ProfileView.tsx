@@ -47,6 +47,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({
   // --- SUBSCRIPTION STATE ---
   const currentPlan = (user?.plan || 'free') as 'free' | 'premium' | 'team' | 'enterprise';
   const isPaidPlan = currentPlan !== 'free';
+  const [isCancelSubModalOpen, setIsCancelSubModalOpen] = useState(false);
   const [portalLoading, setPortalLoading] = useState(false);
   const [portalError, setPortalError] = useState<string | null>(null);
   const [portalFallbackUrl, setPortalFallbackUrl] = useState<string | null>(null);
@@ -140,7 +141,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({
     }
   };
 
-  // Apertura Portale Clienti Stripe reale (disdetta, metodo di pagamento, fatture)
+  // Apertura Portale Clienti Stripe reale per completare l'annullamento
   const handleOpenCustomerPortal = async () => {
     setPortalError(null);
     setPortalFallbackUrl(null);
@@ -155,12 +156,14 @@ const ProfileView: React.FC<ProfileViewProps> = ({
         const opened = window.open(portalUrl, '_blank', 'noopener,noreferrer');
         if (!opened) {
           setPortalFallbackUrl(portalUrl);
+        } else {
+          setIsCancelSubModalOpen(false);
         }
       } else {
         window.location.assign(portalUrl);
       }
     } catch (err: any) {
-      setPortalError(err?.message || 'Impossibile aprire il Portale Clienti Stripe.');
+      setPortalError(err?.message || 'Impossibile aprire la pagina di annullamento Stripe.');
     } finally {
       setPortalLoading(false);
     }
@@ -390,17 +393,6 @@ const ProfileView: React.FC<ProfileViewProps> = ({
 
           {/* Pulsanti Azione Abbonamento */}
           <div className="flex flex-wrap items-center gap-3 pt-2">
-            {isPaidPlan && (
-              <button
-                type="button"
-                onClick={handleOpenCustomerPortal}
-                disabled={portalLoading}
-                className="flex-1 sm:flex-none px-5 py-2.5 rounded-xl font-bold text-xs bg-slate-900 text-white hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-100 transition shadow-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-wait"
-              >
-                {portalLoading ? 'Apertura Portale Stripe...' : 'Gestisci o Annulla Abbonamento'}
-              </button>
-            )}
-
             <button
               type="button"
               onClick={() => window.open('https://diarioapistico.com', '_blank', 'noopener,noreferrer')}
@@ -411,33 +403,25 @@ const ProfileView: React.FC<ProfileViewProps> = ({
               </svg>
               Visita diarioapistico.com
             </button>
-          </div>
 
-          {portalError && (
-            <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-xs text-red-700 dark:text-red-300">
-              {portalError}
-            </div>
-          )}
-
-          {portalFallbackUrl && (
-            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <span className="text-xs text-amber-800 dark:text-amber-200">
-                Il browser ha bloccato l'apertura automatica: clicca qui per aprire il portale Stripe.
-              </span>
-              <a
-                href={portalFallbackUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold text-center shrink-0"
+            {isPaidPlan && (
+              <button
+                type="button"
+                onClick={() => {
+                  setPortalError(null);
+                  setPortalFallbackUrl(null);
+                  setIsCancelSubModalOpen(true);
+                }}
+                className="flex-1 sm:flex-none px-5 py-2.5 rounded-xl font-bold text-xs border border-red-200 dark:border-red-900/60 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition flex items-center justify-center gap-2 cursor-pointer"
               >
-                Apri Portale Stripe
-              </a>
-            </div>
-          )}
+                Annulla Abbonamento
+              </button>
+            )}
+          </div>
 
           <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
             {isPaidPlan
-              ? 'Dal Portale Clienti Stripe puoi annullare il rinnovo, cambiare carta o scaricare le fatture.'
+              ? 'Puoi annullare il rinnovo automatico in qualsiasi momento senza costi aggiuntivi.'
               : 'I piani avanzati e la gestione degli abbonamenti sono disponibili sul nostro sito web ufficiale.'}
           </p>
 
@@ -534,6 +518,74 @@ const ProfileView: React.FC<ProfileViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* POP-UP DI CONFERMA ANNULLAMENTO ABBONAMENTO */}
+      <Modal
+        isOpen={isCancelSubModalOpen}
+        onClose={() => {
+          if (!portalLoading) {
+            setIsCancelSubModalOpen(false);
+          }
+        }}
+        title="Annulla Abbonamento"
+      >
+        <div className="p-4 space-y-4">
+          <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 space-y-1.5">
+            <p className="text-sm font-semibold text-slate-800 dark:text-white">
+              Sei sicuro di voler annullare il piano {planInfo.title}?
+            </p>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              Continuerai ad usufruire di tutti i vantaggi del piano fino alla fine del periodo già pagato e non ti verranno addebitati ulteriori rinnovi. I tuoi apiari e dati salvati rimarranno al sicuro.
+            </p>
+          </div>
+
+          <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+            Cliccando su <strong>Procedi all'annullamento</strong> verrai indirizzato alla pagina sicura di Stripe per confermare la disdetta.
+          </p>
+
+          {portalError && (
+            <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-xs text-red-700 dark:text-red-300">
+              {portalError}
+            </div>
+          )}
+
+          {portalFallbackUrl && (
+            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <span className="text-xs text-amber-800 dark:text-amber-200">
+                Il browser ha bloccato l'apertura automatica: tocca qui per continuare su Stripe.
+              </span>
+              <a
+                href={portalFallbackUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setIsCancelSubModalOpen(false)}
+                className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold text-center shrink-0"
+              >
+                Apri Pagina Stripe
+              </a>
+            </div>
+          )}
+
+          <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 pt-2">
+            <button
+              type="button"
+              disabled={portalLoading}
+              onClick={() => setIsCancelSubModalOpen(false)}
+              className="px-4 py-2.5 text-xs font-semibold rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-50"
+            >
+              Mantieni Abbonamento
+            </button>
+            <button
+              type="button"
+              disabled={portalLoading}
+              onClick={handleOpenCustomerPortal}
+              className="px-5 py-2.5 text-xs font-bold rounded-xl bg-red-600 hover:bg-red-700 text-white transition shadow-sm cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+            >
+              {portalLoading ? 'Connessione a Stripe...' : "Procedi all'annullamento"}
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       {/* POP-UP DI SICUREZZA ELIMINAZIONE ACCOUNT */}
       <Modal

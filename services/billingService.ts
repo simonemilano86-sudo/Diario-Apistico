@@ -4,15 +4,18 @@ import { supabase } from './supabase';
 const AUTH_TOKEN_STORAGE_KEY = 'sb-uqvovgxdfleosaodpyyb-auth-token';
 
 async function getValidAccessToken(): Promise<string> {
-  let fallbackToken: string | null = null;
+  let validStoredToken: string | null = null;
   try {
     const raw = localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed?.access_token) {
-        fallbackToken = parsed.access_token;
-        if (parsed?.expires_at && parsed.expires_at * 1000 > Date.now() + 60000) {
+        const expiresAtMs = parsed?.expires_at ? parsed.expires_at * 1000 : 0;
+        if (expiresAtMs > Date.now() + 60000) {
           return parsed.access_token;
+        }
+        if (!expiresAtMs || expiresAtMs > Date.now()) {
+          validStoredToken = parsed.access_token;
         }
       }
     }
@@ -24,18 +27,43 @@ async function getValidAccessToken(): Promise<string> {
     const sessionRes = await Promise.race([
       supabase.auth.getSession(),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('AUTH_SESSION_TIMEOUT')), 3000)
+        setTimeout(() => reject(new Error('AUTH_SESSION_TIMEOUT')), 5000)
       ),
     ]);
-    if (sessionRes.error && !fallbackToken) throw sessionRes.error;
-    const token = sessionRes.data?.session?.access_token || fallbackToken;
-    if (!token) throw new Error('Sessione non valida. Effettua nuovamente il login.');
-    return token;
+
+    let session = sessionRes.data?.session || null;
+    const isExpiringSoon =
+      session?.expires_at ? session.expires_at * 1000 <= Date.now() + 30000 : false;
+
+    if (!session || isExpiringSoon) {
+      const refreshed = await Promise.race([
+        supabase.auth.refreshSession(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('AUTH_REFRESH_TIMEOUT')), 5000)
+        ),
+      ]).catch(() => null);
+
+      if (refreshed && refreshed.data?.session?.access_token) {
+        return refreshed.data.session.access_token;
+      }
+    }
+
+    if (session?.access_token) {
+      return session.access_token;
+    }
+
+    if (validStoredToken) {
+      return validStoredToken;
+    }
+
+    throw new Error('Sessione non valida. Effettua nuovamente il login.');
   } catch (err) {
-    if (fallbackToken) return fallbackToken;
-    throw err instanceof Error && err.message !== 'AUTH_SESSION_TIMEOUT'
+    if (validStoredToken) return validStoredToken;
+    throw err instanceof Error &&
+      err.message !== 'AUTH_SESSION_TIMEOUT' &&
+      err.message !== 'AUTH_REFRESH_TIMEOUT'
       ? err
-      : new Error('Sessione scaduta o non disponibile. Ricarica l’app e riprova.');
+      : new Error('Sessione scaduta o non disponibile. Ricarica l’app ed effettua di nuovo il login.');
   }
 }
 
@@ -52,7 +80,7 @@ async function extractInvokeErrorMessage(error: any, data: any): Promise<string>
         const errBody = await target.json();
         if (errBody && (errBody.error || errBody.message)) {
           const base = errBody.error || errBody.message;
-          return errBody.details ? `${base}: ${errBody.details}` : String(base);
+          return errBody.details ? `${base}: ${base !== errBody.details ? errBody.details : ''}` : String(base);
         }
       }
     } catch {
