@@ -325,6 +325,8 @@ serve(async (req: Request) => {
           }
 
           if (customerEmail) {
+            let resolvedUserId: string | null = null;
+
             const { data: userRow } = await supabaseAdmin
               .from('users')
               .select('id')
@@ -332,12 +334,37 @@ serve(async (req: Request) => {
               .maybeSingle();
 
             if (userRow?.id) {
+              resolvedUserId = userRow.id;
+            } else {
+              try {
+                const { data: authData } = await supabaseAdmin.auth.admin.listUsers();
+                const matchedAuthUser = authData?.users?.find(
+                  (u: any) => u.email?.toLowerCase() === customerEmail!.toLowerCase()
+                );
+                if (matchedAuthUser?.id) {
+                  resolvedUserId = matchedAuthUser.id;
+                }
+              } catch (authLookupErr) {
+                console.warn('Errore ricerca in auth.users (disdetta):', authLookupErr);
+              }
+            }
+
+            if (resolvedUserId) {
               await supabaseAdmin
                 .from('user_quotas')
                 .update({ plan: 'free' })
-                .eq('user_id', userRow.id);
+                .eq('user_id', resolvedUserId);
 
-              console.log(`Piano resettato a free per utente ${userRow.id} (${customerEmail})`);
+              try {
+                await supabaseAdmin
+                  .from('users')
+                  .update({ plan: 'free' })
+                  .eq('id', resolvedUserId);
+              } catch (_) {
+                // Ignoriamo se la colonna plan non esiste su public.users
+              }
+
+              console.log(`Piano resettato a free per utente ${resolvedUserId} (${customerEmail})`);
             }
           }
         } catch (subErr) {

@@ -11,8 +11,10 @@ import {
   WarningIcon,
   CheckCircleIcon
 } from './Icons';
+import { Capacitor } from '@capacitor/core';
 import Modal from './Modal';
 import { deleteFullAccount, changeUserPassword } from '../services/accountService';
+import { createStripePortalUrl } from '../services/billingService';
 
 interface ProfileViewProps {
   user: User | null;
@@ -45,15 +47,9 @@ const ProfileView: React.FC<ProfileViewProps> = ({
   // --- SUBSCRIPTION STATE ---
   const currentPlan = (user?.plan || 'free') as 'free' | 'premium' | 'team' | 'enterprise';
   const isPaidPlan = currentPlan !== 'free';
-  const [isAutoRenewActive, setIsAutoRenewActive] = useState<boolean>(() => {
-    try {
-      const stored = localStorage.getItem(`beewise:autorenew:${user?.email}`);
-      return stored !== null ? stored === 'true' : true;
-    } catch {
-      return true;
-    }
-  });
-  const [isSuspendModalOpen, setIsSuspendModalOpen] = useState(false);
+  const [portalLoading, setPortalLoading] = useState(false);
+  const [portalError, setPortalError] = useState<string | null>(null);
+  const [portalFallbackUrl, setPortalFallbackUrl] = useState<string | null>(null);
 
   // --- DELETE ACCOUNT MODAL STATE ---
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -144,18 +140,30 @@ const ProfileView: React.FC<ProfileViewProps> = ({
     }
   };
 
-  // Gestione sospensione abbonamento
-  const handleToggleAutoRenew = () => {
-    const nextState = !isAutoRenewActive;
-    setIsAutoRenewActive(nextState);
-    if (user?.email) {
-      try {
-        localStorage.setItem(`beewise:autorenew:${user.email}`, String(nextState));
-      } catch (e) {
-        console.warn(e);
+  // Apertura Portale Clienti Stripe reale (disdetta, metodo di pagamento, fatture)
+  const handleOpenCustomerPortal = async () => {
+    setPortalError(null);
+    setPortalFallbackUrl(null);
+    setPortalLoading(true);
+
+    try {
+      const portalUrl = await createStripePortalUrl();
+      const isNative = Capacitor.isNativePlatform();
+      const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
+
+      if (isNative || isInIframe) {
+        const opened = window.open(portalUrl, '_blank', 'noopener,noreferrer');
+        if (!opened) {
+          setPortalFallbackUrl(portalUrl);
+        }
+      } else {
+        window.location.assign(portalUrl);
       }
+    } catch (err: any) {
+      setPortalError(err?.message || 'Impossibile aprire il Portale Clienti Stripe.');
+    } finally {
+      setPortalLoading(false);
     }
-    setIsSuspendModalOpen(false);
   };
 
   // Gestione eliminazione account
@@ -363,18 +371,12 @@ const ProfileView: React.FC<ProfileViewProps> = ({
               <p className="text-base font-bold text-slate-800 dark:text-white mt-0.5">{planInfo.maxUsers}</p>
             </div>
             <div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Rinnovo Automatico</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Stato Sottoscrizione</p>
               <p className="text-base font-bold mt-0.5 flex items-center gap-1.5">
                 {isPaidPlan ? (
-                  isAutoRenewActive ? (
-                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold text-sm flex items-center gap-1">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Attivo
-                    </span>
-                  ) : (
-                    <span className="text-amber-600 dark:text-amber-400 font-semibold text-sm">
-                      Sospeso (fino a scadenza)
-                    </span>
-                  )
+                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold text-sm flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Attivo
+                  </span>
                 ) : (
                   <span className="text-slate-400 text-sm">Nessuno (Gratuito)</span>
                 )}
@@ -388,7 +390,19 @@ const ProfileView: React.FC<ProfileViewProps> = ({
 
           {/* Pulsanti Azione Abbonamento */}
           <div className="flex flex-wrap items-center gap-3 pt-2">
+            {isPaidPlan && (
+              <button
+                type="button"
+                onClick={handleOpenCustomerPortal}
+                disabled={portalLoading}
+                className="flex-1 sm:flex-none px-5 py-2.5 rounded-xl font-bold text-xs bg-slate-900 text-white hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-100 transition shadow-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+              >
+                {portalLoading ? 'Apertura Portale Stripe...' : 'Gestisci o Annulla Abbonamento'}
+              </button>
+            )}
+
             <button
+              type="button"
               onClick={() => window.open('https://diarioapistico.com', '_blank', 'noopener,noreferrer')}
               className="flex-1 sm:flex-none px-5 py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-white hover:bg-amber-600 transition shadow-sm flex items-center justify-center gap-2 cursor-pointer"
             >
@@ -397,23 +411,34 @@ const ProfileView: React.FC<ProfileViewProps> = ({
               </svg>
               Visita diarioapistico.com
             </button>
-
-            {isPaidPlan && (
-              <button
-                onClick={() => setIsSuspendModalOpen(true)}
-                className={`px-4 py-2.5 rounded-xl font-bold text-xs border transition ${
-                  isAutoRenewActive
-                    ? 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'
-                    : 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300'
-                }`}
-              >
-                {isAutoRenewActive ? 'Sospendi Rinnovo Automatico' : 'Riattiva Rinnovo Automatico'}
-              </button>
-            )}
           </div>
 
+          {portalError && (
+            <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-xs text-red-700 dark:text-red-300">
+              {portalError}
+            </div>
+          )}
+
+          {portalFallbackUrl && (
+            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <span className="text-xs text-amber-800 dark:text-amber-200">
+                Il browser ha bloccato l'apertura automatica: clicca qui per aprire il portale Stripe.
+              </span>
+              <a
+                href={portalFallbackUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold text-center shrink-0"
+              >
+                Apri Portale Stripe
+              </a>
+            </div>
+          )}
+
           <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-            I piani avanzati e la gestione degli abbonamenti sono disponibili sul nostro sito web ufficiale.
+            {isPaidPlan
+              ? 'Dal Portale Clienti Stripe puoi annullare il rinnovo, cambiare carta o scaricare le fatture.'
+              : 'I piani avanzati e la gestione degli abbonamenti sono disponibili sul nostro sito web ufficiale.'}
           </p>
 
           {/* Dettagli Metodo di Pagamento & Fatture */}
@@ -509,60 +534,6 @@ const ProfileView: React.FC<ProfileViewProps> = ({
           </div>
         </div>
       </div>
-
-      {/* MODALE DI SOSPENSIONE / RIATTIVAZIONE RINNOVO */}
-      <Modal
-        isOpen={isSuspendModalOpen}
-        onClose={() => setIsSuspendModalOpen(false)}
-        title={isAutoRenewActive ? 'Sospendi Rinnovo Automatico' : 'Riattiva Rinnovo Automatico'}
-      >
-        <div className="p-4 space-y-4">
-          {isAutoRenewActive ? (
-            <>
-              <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-                Se sospendi il rinnovo automatico, continuerai ad usufruire di tutti i vantaggi del piano <strong>{planInfo.title}</strong> fino al termine del periodo pagato corrente.
-              </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Non riceverai ulteriori addebiti a meno che tu non decida di riattivare il piano in qualsiasi momento.
-              </p>
-              <div className="flex justify-end gap-3 pt-3">
-                <button
-                  onClick={() => setIsSuspendModalOpen(false)}
-                  className="px-4 py-2 text-xs font-semibold rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
-                >
-                  Annulla
-                </button>
-                <button
-                  onClick={handleToggleAutoRenew}
-                  className="px-5 py-2 text-xs font-bold rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition"
-                >
-                  Conferma Sospensione
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-                Vuoi riattivare il rinnovo automatico per mantenere sincronizzati i tuoi apiari e l'accesso su più dispositivi senza interruzioni?
-              </p>
-              <div className="flex justify-end gap-3 pt-3">
-                <button
-                  onClick={() => setIsSuspendModalOpen(false)}
-                  className="px-4 py-2 text-xs font-semibold rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
-                >
-                  Annulla
-                </button>
-                <button
-                  onClick={handleToggleAutoRenew}
-                  className="px-5 py-2 text-xs font-bold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition"
-                >
-                  Riattiva Rinnovo
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      </Modal>
 
       {/* POP-UP DI SICUREZZA ELIMINAZIONE ACCOUNT */}
       <Modal
