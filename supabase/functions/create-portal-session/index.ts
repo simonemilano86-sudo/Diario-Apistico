@@ -39,6 +39,22 @@ function resolveSafeReturnUrl(rawReturnUrl?: string | null): string {
   return defaultUrl;
 }
 
+function extractPeriodEndIso(sub: any): string | null {
+  const rawTs =
+    sub?.current_period_end ||
+    sub?.items?.data?.[0]?.current_period_end ||
+    sub?.cancel_at ||
+    null;
+  if (typeof rawTs === 'number' && rawTs > 0) {
+    return new Date(rawTs * 1000).toISOString();
+  }
+  return null;
+}
+
+function isSubCancelScheduled(sub: any): boolean {
+  return Boolean(sub?.cancel_at_period_end || (sub?.cancel_at && sub?.status !== 'canceled'));
+}
+
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -105,13 +121,72 @@ serve(async (req: Request) => {
     }
 
     const body = await req.json().catch(() => ({}));
-    const returnUrl = resolveSafeReturnUrl(body?.returnUrl);
+    const action: 'status' | 'cancel' | 'reactivate' | 'link_session' | 'portal' =
+      body?.action === 'status' ||
+      body?.action === 'cancel' ||
+      body?.action === 'reactivate' ||
+      body?.action === 'link_session'
+        ? body.action
+        : 'portal';
 
     const stripe = new Stripe(stripeKey, {
       apiVersion: '2023-10-16',
       httpClient: Stripe.createFetchHttpClient(),
     });
 
+    // --- AZIONE: COLLEGAMENTO AUTOMATICO SESSIONE STRIPE AL RITORNO DAL PAGAMENTO ---
+    if (action === 'link_session') {
+      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : '';
+      if (!sessionId || !userId) {
+        return json(400, { error: 'sessionId o userId mancante.' });
+      }
+
+      const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
+      if (checkoutSession.status !== 'complete') {
+        return json(400, { error: 'Sessione di pagamento non completata.' });
+      }
+
+      const custId =
+        typeof checkoutSession.customer === 'string'
+          ? checkoutSession.customer
+          : checkoutSession.customer?.id;
+
+      if (custId) {
+        const existingCust = await stripe.customers.retrieve(custId);
+        const existingOwner =
+          existingCust && !('deleted' in existingCust && existingCust.deleted)
+            ? existingCust.metadata?.supabase_user_id
+            : null;
+
+        // Salva l'associazione solo se non appartiene già a un altro utente diverso
+        if (!existingOwner || existingOwner === userId) {
+          await stripe.customers.update(custId, {
+            metadata: {
+              ...(existingCust && !('deleted' in existingCust) ? existingCust.metadata || {} : {}),
+              supabase_user_id: userId,
+              ...(userEmail ? { app_email: userEmail.trim().toLowerCase() } : {}),
+            },
+          });
+        }
+      }
+
+      const subId =
+        typeof checkoutSession.subscription === 'string'
+          ? checkoutSession.subscription
+          : checkoutSession.subscription?.id;
+
+      if (subId) {
+        await stripe.subscriptions.update(subId, {
+          metadata: {
+            supabase_user_id: userId,
+          },
+        });
+      }
+
+      return json(200, { linked: true });
+    }
+
+    // --- RICERCA CUSTOMER E ABBONAMENTO ATTIVO PER L'UTENTE ---
     const candidateMap = new Map<string, Stripe.Customer>();
     const addCandidate = (c: Stripe.Customer | Stripe.DeletedCustomer | null | undefined) => {
       if (c && !('deleted' in c && c.deleted) && c.id) {
@@ -147,8 +222,7 @@ serve(async (req: Request) => {
       }
     }
 
-    // 3) Fallback fondamentale per Google Pay / Apple Pay / Stripe Link con email diversa:
-    //    cerchiamo nelle Checkout Sessions chi ha acquistato con client_reference_id === userId
+    // 3) Fallback sulle Checkout Sessions con client_reference_id === userId
     if (userId && candidateMap.size === 0) {
       try {
         const recentSessions = await stripe.checkout.sessions.list({ limit: 100 });
@@ -170,39 +244,44 @@ serve(async (req: Request) => {
     const customerCandidates = Array.from(candidateMap.values());
 
     if (customerCandidates.length === 0) {
+      if (action === 'status') {
+        return json(200, {
+          hasSubscription: false,
+          subscriptionId: null,
+          status: null,
+          cancelAtPeriodEnd: false,
+          currentPeriodEnd: null,
+        });
+      }
+
       return json(404, {
         error:
           'Nessun abbonamento Stripe attivo trovato per questo account. Se il piano è stato attivato manualmente o tramite codice regalo, non richiede annullamento su Stripe.',
       });
     }
 
-    // Diamo priorità al Customer che ha un abbonamento attivo, in prova o scaduto/past_due
     let chosenCustomer: Stripe.Customer = customerCandidates[0];
-    let foundPrioritySub = false;
+    let activeSubscription: Stripe.Subscription | null = null;
 
     for (const candidate of customerCandidates) {
       const subs = await stripe.subscriptions.list({
         customer: candidate.id,
         status: 'all',
-        limit: 5,
+        limit: 10,
       });
 
-      const hasActiveOrPending = subs.data.some((s) =>
+      const foundSub = subs.data.find((s) =>
         ['active', 'trialing', 'past_due', 'unpaid', 'paused'].includes(s.status)
       );
 
-      if (hasActiveOrPending) {
+      if (foundSub) {
         chosenCustomer = candidate;
-        foundPrioritySub = true;
+        activeSubscription = foundSub;
         break;
-      }
-
-      if (!foundPrioritySub && subs.data.length > 0) {
-        chosenCustomer = candidate;
       }
     }
 
-    // Assicuriamoci che supabase_user_id sia salvato sul Customer scelto per futuri webhook di disdetta
+    // Salviamo supabase_user_id sul Customer e sulla Subscription per garantire il futuro webhook di ritorno a free
     if (userId && chosenCustomer.metadata?.supabase_user_id !== userId) {
       try {
         await stripe.customers.update(chosenCustomer.id, {
@@ -217,6 +296,79 @@ serve(async (req: Request) => {
       }
     }
 
+    // --- AZIONE: STATO CORRENTE ABBONAMENTO ---
+    if (action === 'status') {
+      if (!activeSubscription) {
+        return json(200, {
+          hasSubscription: false,
+          subscriptionId: null,
+          status: null,
+          cancelAtPeriodEnd: false,
+          currentPeriodEnd: null,
+        });
+      }
+
+      return json(200, {
+        hasSubscription: true,
+        subscriptionId: activeSubscription.id,
+        status: activeSubscription.status,
+        cancelAtPeriodEnd: isSubCancelScheduled(activeSubscription),
+        currentPeriodEnd: extractPeriodEndIso(activeSubscription),
+      });
+    }
+
+    // --- AZIONE: ANNULLAMENTO DIRETTO 100% IN-APP (FINE PERIODO) ---
+    if (action === 'cancel') {
+      if (!activeSubscription) {
+        return json(404, {
+          error: 'Nessun abbonamento attivo da annullare trovato per questo account.',
+        });
+      }
+
+      const updatedSub = await stripe.subscriptions.update(activeSubscription.id, {
+        cancel_at_period_end: true,
+        metadata: {
+          ...(activeSubscription.metadata || {}),
+          ...(userId ? { supabase_user_id: userId } : {}),
+        },
+      });
+
+      return json(200, {
+        success: true,
+        subscriptionId: updatedSub.id,
+        status: updatedSub.status,
+        cancelAtPeriodEnd: isSubCancelScheduled(updatedSub),
+        currentPeriodEnd: extractPeriodEndIso(updatedSub),
+      });
+    }
+
+    // --- AZIONE: RIATTIVAZIONE RINNOVO DIRETTO 100% IN-APP ---
+    if (action === 'reactivate') {
+      if (!activeSubscription) {
+        return json(404, {
+          error: 'Nessun abbonamento attivo trovato da riattivare.',
+        });
+      }
+
+      const updatedSub = await stripe.subscriptions.update(activeSubscription.id, {
+        cancel_at_period_end: false,
+        metadata: {
+          ...(activeSubscription.metadata || {}),
+          ...(userId ? { supabase_user_id: userId } : {}),
+        },
+      });
+
+      return json(200, {
+        success: true,
+        subscriptionId: updatedSub.id,
+        status: updatedSub.status,
+        cancelAtPeriodEnd: isSubCancelScheduled(updatedSub),
+        currentPeriodEnd: extractPeriodEndIso(updatedSub),
+      });
+    }
+
+    // --- FALLBACK: PORTALE STRIPE ---
+    const returnUrl = resolveSafeReturnUrl(body?.returnUrl);
     const portalSession = await stripe.billingPortal.sessions.create({
       customer: chosenCustomer.id,
       return_url: returnUrl,
@@ -225,15 +377,7 @@ serve(async (req: Request) => {
     return json(200, { url: portalSession.url });
   } catch (err: any) {
     console.error('Errore create-portal-session:', err);
-    const msg = String(err?.message || 'Impossibile aprire il portale abbonamento.');
-
-    if (msg.toLowerCase().includes('no configuration provided')) {
-      return json(500, {
-        error:
-          'Il Portale Clienti Stripe non è ancora stato salvato nella Dashboard Stripe (Impostazioni → Fatturazione → Portale clienti → Salva).',
-      });
-    }
-
+    const msg = String(err?.message || 'Operazione sull’abbonamento non riuscita.');
     return json(500, { error: msg });
   }
 });

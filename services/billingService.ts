@@ -1,7 +1,14 @@
-import { Capacitor } from '@capacitor/core';
 import { supabase } from './supabase';
 
 const AUTH_TOKEN_STORAGE_KEY = 'sb-uqvovgxdfleosaodpyyb-auth-token';
+
+export interface StripeSubscriptionInfo {
+  hasSubscription: boolean;
+  subscriptionId: string | null;
+  status: string | null;
+  cancelAtPeriodEnd: boolean;
+  currentPeriodEnd: string | null;
+}
 
 async function getValidAccessToken(): Promise<string> {
   let validStoredToken: string | null = null;
@@ -31,7 +38,7 @@ async function getValidAccessToken(): Promise<string> {
       ),
     ]);
 
-    let session = sessionRes.data?.session || null;
+    const session = sessionRes.data?.session || null;
     const isExpiringSoon =
       session?.expires_at ? session.expires_at * 1000 <= Date.now() + 30000 : false;
 
@@ -99,28 +106,10 @@ async function extractInvokeErrorMessage(error: any, data: any): Promise<string>
   return error?.message || 'Errore nella comunicazione con il server Stripe.';
 }
 
-export function getPortalReturnUrl(): string {
-  if (typeof window !== 'undefined' && !Capacitor.isNativePlatform()) {
-    const { protocol, hostname, origin } = window.location;
-    if (
-      protocol === 'https:' &&
-      (hostname === 'app.diarioapistico.com' ||
-        hostname === 'diarioapistico.com' ||
-        hostname.endsWith('.diarioapistico.com') ||
-        hostname.endsWith('.run.app'))
-    ) {
-      return `${origin}/`;
-    }
-  }
-  return 'https://app.diarioapistico.com/';
-}
-
-export async function createStripePortalUrl(): Promise<string> {
+async function invokeBillingAction<T>(payload: Record<string, unknown>): Promise<T> {
   const accessToken = await getValidAccessToken();
-  const returnUrl = getPortalReturnUrl();
-
   const { data, error } = await supabase.functions.invoke('create-portal-session', {
-    body: { returnUrl },
+    body: payload,
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
@@ -131,9 +120,29 @@ export async function createStripePortalUrl(): Promise<string> {
     throw new Error(msg);
   }
 
-  if (!data?.url) {
-    throw new Error('Link del portale clienti Stripe non ricevuto dal server.');
-  }
+  return data as T;
+}
 
-  return String(data.url);
+export async function getStripeSubscriptionStatus(): Promise<StripeSubscriptionInfo> {
+  return invokeBillingAction<StripeSubscriptionInfo>({ action: 'status' });
+}
+
+export async function cancelStripeSubscriptionInApp(): Promise<StripeSubscriptionInfo> {
+  return invokeBillingAction<StripeSubscriptionInfo>({ action: 'cancel' });
+}
+
+export async function reactivateStripeSubscriptionInApp(): Promise<StripeSubscriptionInfo> {
+  return invokeBillingAction<StripeSubscriptionInfo>({ action: 'reactivate' });
+}
+
+export async function linkStripeCheckoutSession(sessionId: string): Promise<void> {
+  if (!sessionId) return;
+  try {
+    await invokeBillingAction<{ linked: boolean }>({
+      action: 'link_session',
+      sessionId,
+    });
+  } catch (err) {
+    console.warn('Avviso collegamento sessione Stripe:', err);
+  }
 }

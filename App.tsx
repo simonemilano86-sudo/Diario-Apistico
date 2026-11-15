@@ -30,6 +30,7 @@ import {
 } from './services/db';
 import { smartMergeApiaries, smartMergeEvents, smartMergeNotes } from './utils/smartMerge';
 import { logger } from './services/logger';
+import { linkStripeCheckoutSession } from './services/billingService';
 
 import Header from './components/Header';
 import BottomNavigation from './components/BottomNavigation';
@@ -517,7 +518,11 @@ const App: React.FC = () => {
     setView(nextView);
   }, []);
 
-  const handlePaymentReturn = useCallback(async (rawPlan?: string | null) => {
+  const handlePaymentReturn = useCallback(async (rawPlan?: string | null, checkoutSessionId?: string | null) => {
+    if (checkoutSessionId) {
+      linkStripeCheckoutSession(checkoutSessionId);
+    }
+
     const normalizedHint = rawPlan === 'singolo'
       ? 'premium'
       : rawPlan === 'azienda'
@@ -602,17 +607,23 @@ const App: React.FC = () => {
       // Gestione ritorno da Stripe via App Link o Custom Scheme
       if (url.includes('payment-success') || url.includes('payment=success') || url.includes('payment_success=true')) {
         let paidPlan: string | null = null;
+        let sessionId: string | null = null;
         try {
           const parsed = new URL(url);
           paidPlan = parsed.searchParams.get('plan');
-          if (!paidPlan && parsed.hash.includes('?')) {
-            paidPlan = new URLSearchParams(parsed.hash.split('?')[1]).get('plan');
+          sessionId = parsed.searchParams.get('session_id');
+          if ((!paidPlan || !sessionId) && parsed.hash.includes('?')) {
+            const hp = new URLSearchParams(parsed.hash.split('?')[1]);
+            paidPlan = paidPlan || hp.get('plan');
+            sessionId = sessionId || hp.get('session_id');
           }
         } catch {
           const match = url.match(/[?&]plan=([^&#]+)/);
           if (match) paidPlan = decodeURIComponent(match[1]);
+          const sMatch = url.match(/[?&]session_id=([^&#]+)/);
+          if (sMatch) sessionId = decodeURIComponent(sMatch[1]);
         }
-        await handlePaymentReturn(paidPlan);
+        await handlePaymentReturn(paidPlan, sessionId);
         return;
       }
       
@@ -1046,16 +1057,20 @@ const App: React.FC = () => {
       // Ritorno da Stripe Checkout dopo pagamento riuscito
       const paymentStatus = urlParams.get('payment') || urlParams.get('payment_success');
       const paidPlanParam = urlParams.get('plan');
+      const checkoutSessionIdParam = urlParams.get('session_id');
       const isPaymentSuccessPath = window.location.pathname.startsWith('/payment-success');
       if (isPaymentSuccessPath || paymentStatus === 'success' || paymentStatus === 'true') {
-        handlePaymentReturn(paidPlanParam);
+        handlePaymentReturn(paidPlanParam, checkoutSessionIdParam);
 
         // Se siamo in un browser Android esterno (es. dopo redirect Stripe), prova a riaprire l'app in background
         if (!Capacitor.isNativePlatform() && /Android/i.test(navigator.userAgent)) {
           const guardKey = 'beewise_payment_app_redirect';
           if (!sessionStorage.getItem(guardKey)) {
             sessionStorage.setItem(guardKey, '1');
-            const query = paidPlanParam ? `?plan=${encodeURIComponent(paidPlanParam)}` : '';
+            const qp = new URLSearchParams();
+            if (paidPlanParam) qp.set('plan', paidPlanParam);
+            if (checkoutSessionIdParam) qp.set('session_id', checkoutSessionIdParam);
+            const query = qp.toString() ? `?${qp.toString()}` : '';
             setTimeout(() => {
               window.location.href = `com.beewise.diario://payment-success${query}`;
             }, 150);

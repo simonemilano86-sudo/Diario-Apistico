@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, Apiary } from '../types';
 import { 
   BackArrowIcon, 
@@ -11,10 +11,14 @@ import {
   WarningIcon,
   CheckCircleIcon
 } from './Icons';
-import { Capacitor } from '@capacitor/core';
 import Modal from './Modal';
 import { deleteFullAccount, changeUserPassword } from '../services/accountService';
-import { createStripePortalUrl } from '../services/billingService';
+import {
+  getStripeSubscriptionStatus,
+  cancelStripeSubscriptionInApp,
+  reactivateStripeSubscriptionInApp,
+  StripeSubscriptionInfo,
+} from '../services/billingService';
 
 interface ProfileViewProps {
   user: User | null;
@@ -47,10 +51,53 @@ const ProfileView: React.FC<ProfileViewProps> = ({
   // --- SUBSCRIPTION STATE ---
   const currentPlan = (user?.plan || 'free') as 'free' | 'premium' | 'team' | 'enterprise';
   const isPaidPlan = currentPlan !== 'free';
+  const [subInfo, setSubInfo] = useState<StripeSubscriptionInfo | null>(null);
+  const [subStatusLoading, setSubStatusLoading] = useState(false);
   const [isCancelSubModalOpen, setIsCancelSubModalOpen] = useState(false);
+  const [cancelSuccessDone, setCancelSuccessDone] = useState(false);
   const [portalLoading, setPortalLoading] = useState(false);
   const [portalError, setPortalError] = useState<string | null>(null);
-  const [portalFallbackUrl, setPortalFallbackUrl] = useState<string | null>(null);
+  const [reactivateNotice, setReactivateNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!isPaidPlan || !user?.email) {
+      setSubInfo(null);
+      return;
+    }
+
+    setSubStatusLoading(true);
+    getStripeSubscriptionStatus()
+      .then((info) => {
+        if (active) setSubInfo(info);
+      })
+      .catch(() => {
+        // silenzioso al caricamento iniziale
+      })
+      .finally(() => {
+        if (active) setSubStatusLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [isPaidPlan, user?.email]);
+
+  const formatPeriodEndDate = (iso?: string | null): string | null => {
+    if (!iso) return null;
+    try {
+      return new Date(iso).toLocaleDateString('it-IT', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      });
+    } catch {
+      return null;
+    }
+  };
+
+  const formattedEndDate = formatPeriodEndDate(subInfo?.currentPeriodEnd);
+  const isCancelScheduled = Boolean(subInfo?.cancelAtPeriodEnd);
 
   // --- DELETE ACCOUNT MODAL STATE ---
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -141,29 +188,48 @@ const ProfileView: React.FC<ProfileViewProps> = ({
     }
   };
 
-  // Apertura Portale Clienti Stripe reale per completare l'annullamento
-  const handleOpenCustomerPortal = async () => {
+  // Annullamento diretto 100% dentro l'app (senza uscire su pagine esterne Stripe)
+  const handleConfirmCancelSubscription = async () => {
     setPortalError(null);
-    setPortalFallbackUrl(null);
+    setReactivateNotice(null);
     setPortalLoading(true);
 
     try {
-      const portalUrl = await createStripePortalUrl();
-      const isNative = Capacitor.isNativePlatform();
-      const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
-
-      if (isNative || isInIframe) {
-        const opened = window.open(portalUrl, '_blank', 'noopener,noreferrer');
-        if (!opened) {
-          setPortalFallbackUrl(portalUrl);
-        } else {
-          setIsCancelSubModalOpen(false);
-        }
-      } else {
-        window.location.assign(portalUrl);
-      }
+      const updated = await cancelStripeSubscriptionInApp();
+      setSubInfo((prev) => ({
+        hasSubscription: true,
+        subscriptionId: updated.subscriptionId || prev?.subscriptionId || null,
+        status: updated.status || prev?.status || 'active',
+        cancelAtPeriodEnd: true,
+        currentPeriodEnd: updated.currentPeriodEnd || prev?.currentPeriodEnd || null,
+      }));
+      setCancelSuccessDone(true);
     } catch (err: any) {
-      setPortalError(err?.message || 'Impossibile aprire la pagina di annullamento Stripe.');
+      setPortalError(err?.message || 'Impossibile annullare l’abbonamento in questo momento.');
+    } finally {
+      setPortalLoading(false);
+    }
+  };
+
+  // Riattivazione diretta del rinnovo automatico dentro l'app
+  const handleReactivateSubscription = async () => {
+    setPortalError(null);
+    setReactivateNotice(null);
+    setPortalLoading(true);
+
+    try {
+      const updated = await reactivateStripeSubscriptionInApp();
+      setSubInfo((prev) => ({
+        hasSubscription: true,
+        subscriptionId: updated.subscriptionId || prev?.subscriptionId || null,
+        status: updated.status || prev?.status || 'active',
+        cancelAtPeriodEnd: false,
+        currentPeriodEnd: updated.currentPeriodEnd || prev?.currentPeriodEnd || null,
+      }));
+      setReactivateNotice('Rinnovo automatico riattivato con successo!');
+      setTimeout(() => setReactivateNotice(null), 4000);
+    } catch (err: any) {
+      setPortalError(err?.message || 'Impossibile riattivare il rinnovo automatico.');
     } finally {
       setPortalLoading(false);
     }
@@ -375,15 +441,22 @@ const ProfileView: React.FC<ProfileViewProps> = ({
             </div>
             <div>
               <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Stato Sottoscrizione</p>
-              <p className="text-base font-bold mt-0.5 flex items-center gap-1.5">
+              <div className="mt-0.5">
                 {isPaidPlan ? (
-                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold text-sm flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Attivo
-                  </span>
+                  isCancelScheduled ? (
+                    <span className="text-amber-600 dark:text-amber-400 font-semibold text-xs sm:text-sm block">
+                      Rinnovo annullato{formattedEndDate ? ` (fino al ${formattedEndDate})` : ''}
+                    </span>
+                  ) : (
+                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold text-sm flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                      {subStatusLoading ? 'Verifica...' : 'Attivo'}
+                    </span>
+                  )
                 ) : (
-                  <span className="text-slate-400 text-sm">Nessuno (Gratuito)</span>
+                  <span className="text-slate-400 text-sm font-bold">Nessuno (Gratuito)</span>
                 )}
-              </p>
+              </div>
             </div>
           </div>
 
@@ -404,12 +477,12 @@ const ProfileView: React.FC<ProfileViewProps> = ({
               Visita diarioapistico.com
             </button>
 
-            {isPaidPlan && (
+            {isPaidPlan && !isCancelScheduled && (
               <button
                 type="button"
                 onClick={() => {
                   setPortalError(null);
-                  setPortalFallbackUrl(null);
+                  setCancelSuccessDone(false);
                   setIsCancelSubModalOpen(true);
                 }}
                 className="flex-1 sm:flex-none px-5 py-2.5 rounded-xl font-bold text-xs border border-red-200 dark:border-red-900/60 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition flex items-center justify-center gap-2 cursor-pointer"
@@ -417,11 +490,36 @@ const ProfileView: React.FC<ProfileViewProps> = ({
                 Annulla Abbonamento
               </button>
             )}
+
+            {isPaidPlan && isCancelScheduled && (
+              <button
+                type="button"
+                disabled={portalLoading}
+                onClick={handleReactivateSubscription}
+                className="flex-1 sm:flex-none px-5 py-2.5 rounded-xl font-bold text-xs border border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+              >
+                {portalLoading ? 'Riattivazione...' : 'Riattiva Rinnovo Automatico'}
+              </button>
+            )}
           </div>
+
+          {reactivateNotice && (
+            <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+              {reactivateNotice}
+            </div>
+          )}
+
+          {portalError && !isCancelSubModalOpen && (
+            <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-xs text-red-700 dark:text-red-300">
+              {portalError}
+            </div>
+          )}
 
           <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
             {isPaidPlan
-              ? 'Puoi annullare il rinnovo automatico in qualsiasi momento senza costi aggiuntivi.'
+              ? isCancelScheduled
+                ? `Il rinnovo automatico è disattivato. Il tuo piano resterà attivo${formattedEndDate ? ` fino al ${formattedEndDate}` : ' fino a fine periodo'} senza ulteriori addebiti.`
+                : `Puoi annullare il rinnovo automatico in qualsiasi momento direttamente da qui${formattedEndDate ? ` (prossimo rinnovo: ${formattedEndDate})` : ''}.`
               : 'I piani avanzati e la gestione degli abbonamenti sono disponibili sul nostro sito web ufficiale.'}
           </p>
 
@@ -519,71 +617,85 @@ const ProfileView: React.FC<ProfileViewProps> = ({
         </div>
       </div>
 
-      {/* POP-UP DI CONFERMA ANNULLAMENTO ABBONAMENTO */}
+      {/* POP-UP DI CONFERMA ANNULLAMENTO ABBONAMENTO (100% IN-APP) */}
       <Modal
         isOpen={isCancelSubModalOpen}
         onClose={() => {
           if (!portalLoading) {
             setIsCancelSubModalOpen(false);
+            setCancelSuccessDone(false);
           }
         }}
-        title="Annulla Abbonamento"
+        title={cancelSuccessDone ? 'Abbonamento Annullato' : 'Annulla Abbonamento'}
       >
         <div className="p-4 space-y-4">
-          <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 space-y-1.5">
-            <p className="text-sm font-semibold text-slate-800 dark:text-white">
-              Sei sicuro di voler annullare il piano {planInfo.title}?
-            </p>
-            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              Continuerai ad usufruire di tutti i vantaggi del piano fino alla fine del periodo già pagato e non ti verranno addebitati ulteriori rinnovi. I tuoi apiari e dati salvati rimarranno al sicuro.
-            </p>
-          </div>
-
-          <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-            Cliccando su <strong>Procedi all'annullamento</strong> verrai indirizzato alla pagina sicura di Stripe per confermare la disdetta.
-          </p>
-
-          {portalError && (
-            <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-xs text-red-700 dark:text-red-300">
-              {portalError}
+          {cancelSuccessDone ? (
+            <div className="text-center py-4 space-y-4">
+              <div className="w-14 h-14 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-full flex items-center justify-center mx-auto">
+                <CheckCircleIcon className="w-8 h-8" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Rinnovo automatico disattivato
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed max-w-sm mx-auto">
+                  Il tuo abbonamento <strong>{planInfo.title}</strong> non verrà più rinnovato e non riceverai ulteriori addebiti.
+                  {formattedEndDate
+                    ? ` Continuerai ad avere accesso completo a tutte le funzioni fino al ${formattedEndDate}.`
+                    : ' Continuerai ad avere accesso completo fino al termine del periodo già pagato.'}
+                </p>
+              </div>
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsCancelSubModalOpen(false);
+                    setCancelSuccessDone(false);
+                  }}
+                  className="w-full sm:w-auto px-6 py-2.5 text-xs font-bold rounded-xl bg-amber-500 hover:bg-amber-600 text-white transition shadow-sm cursor-pointer"
+                >
+                  Torna al Profilo
+                </button>
+              </div>
             </div>
-          )}
+          ) : (
+            <>
+              <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 space-y-1.5">
+                <p className="text-sm font-semibold text-slate-800 dark:text-white">
+                  Sei sicuro di voler annullare il piano {planInfo.title}?
+                </p>
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Continuerai ad usufruire di tutti i vantaggi del piano
+                  {formattedEndDate ? ` fino al ${formattedEndDate}` : ' fino alla fine del periodo già pagato'} e non ti verranno addebitati ulteriori rinnovi. I tuoi apiari e dati salvati rimarranno al sicuro.
+                </p>
+              </div>
 
-          {portalFallbackUrl && (
-            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <span className="text-xs text-amber-800 dark:text-amber-200">
-                Il browser ha bloccato l'apertura automatica: tocca qui per continuare su Stripe.
-              </span>
-              <a
-                href={portalFallbackUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={() => setIsCancelSubModalOpen(false)}
-                className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold text-center shrink-0"
-              >
-                Apri Pagina Stripe
-              </a>
-            </div>
-          )}
+              {portalError && (
+                <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-xs text-red-700 dark:text-red-300">
+                  {portalError}
+                </div>
+              )}
 
-          <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 pt-2">
-            <button
-              type="button"
-              disabled={portalLoading}
-              onClick={() => setIsCancelSubModalOpen(false)}
-              className="px-4 py-2.5 text-xs font-semibold rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-50"
-            >
-              Mantieni Abbonamento
-            </button>
-            <button
-              type="button"
-              disabled={portalLoading}
-              onClick={handleOpenCustomerPortal}
-              className="px-5 py-2.5 text-xs font-bold rounded-xl bg-red-600 hover:bg-red-700 text-white transition shadow-sm cursor-pointer disabled:opacity-60 disabled:cursor-wait"
-            >
-              {portalLoading ? 'Connessione a Stripe...' : "Procedi all'annullamento"}
-            </button>
-          </div>
+              <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  disabled={portalLoading}
+                  onClick={() => setIsCancelSubModalOpen(false)}
+                  className="px-4 py-2.5 text-xs font-semibold rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-50"
+                >
+                  Mantieni Abbonamento
+                </button>
+                <button
+                  type="button"
+                  disabled={portalLoading}
+                  onClick={handleConfirmCancelSubscription}
+                  className="px-5 py-2.5 text-xs font-bold rounded-xl bg-red-600 hover:bg-red-700 text-white transition shadow-sm cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+                >
+                  {portalLoading ? 'Annullamento in corso...' : 'Conferma Annullamento'}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </Modal>
 
