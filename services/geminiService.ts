@@ -1,6 +1,15 @@
 import { supabase } from './supabase';
 
-const getBeekeepingAdvice = async (prompt: string, imageBase64?: string, history?: any[]): Promise<string> => {
+export interface AiAdviceResponse {
+    text: string;
+    tokensUsed?: number;
+    tokensLimit?: number;
+    plan?: string;
+    quotaExceeded?: boolean;
+    errorMessage?: string;
+}
+
+const askBeekeepingAssistant = async (prompt: string, imageBase64?: string, history?: any[]): Promise<AiAdviceResponse> => {
     try {
         // Verifica e aggiorna la sessione se il token è vicino alla scadenza
         let { data: { session } } = await supabase.auth.getSession();
@@ -13,7 +22,10 @@ const getBeekeepingAdvice = async (prompt: string, imageBase64?: string, history
         }
 
         if (!session) {
-            return "Devi accedere per utilizzare l'Assistente IA.";
+            return {
+                text: "Devi accedere per utilizzare l'Assistente IA.",
+                errorMessage: "Devi accedere per utilizzare l'Assistente IA.",
+            };
         }
 
         const { data, error } = await supabase.functions.invoke('ask-gemini', {
@@ -42,14 +54,38 @@ const getBeekeepingAdvice = async (prompt: string, imageBase64?: string, history
         }
 
         if (data && data.error) {
+            if (data.quota_exceeded) {
+                return {
+                    text: data.error,
+                    tokensUsed: data.tokens_used,
+                    tokensLimit: data.tokens_limit,
+                    plan: data.plan,
+                    quotaExceeded: true,
+                    errorMessage: data.error,
+                };
+            }
             throw new Error(data.error);
         }
 
-        return data?.text || "Nessuna risposta generata dall'IA.";
+        return {
+            text: data?.text || "Nessuna risposta generata dall'IA.",
+            tokensUsed: typeof data?.tokens_used === 'number' ? data.tokens_used : undefined,
+            tokensLimit: typeof data?.tokens_limit === 'number' ? data.tokens_limit : undefined,
+            plan: data?.plan,
+        };
     } catch (error: any) {
         console.error("Error calling Gemini Edge Function:", error);
-        return `Si è verificato un errore con l'assistente: ${error.message || 'Errore di connessione'}`;
+        const msg = `Si è verificato un errore con l'assistente: ${error.message || 'Errore di connessione'}`;
+        return {
+            text: msg,
+            errorMessage: msg,
+        };
     }
 };
 
-export { getBeekeepingAdvice };
+const getBeekeepingAdvice = async (prompt: string, imageBase64?: string, history?: any[]): Promise<string> => {
+    const res = await askBeekeepingAssistant(prompt, imageBase64, history);
+    return res.text;
+};
+
+export { getBeekeepingAdvice, askBeekeepingAssistant };
