@@ -410,6 +410,73 @@ export const fetchUserPlan = async (userId: string, retries = 2): Promise<'free'
   }
 };
 
+export interface AiQuotaStatus {
+  tokensUsed: number;
+  tokensLimit: number;
+  plan: 'free' | 'premium' | 'team' | 'enterprise';
+  validUntil: string | null;
+  lastReset: string | null;
+}
+
+export const AI_LIMIT_FREE = 10000;
+export const AI_LIMIT_PREMIUM = 200000;
+
+export const fetchAiQuota = async (userId: string): Promise<AiQuotaStatus | null> => {
+  try {
+    const { data, error } = await supabase
+      .from('user_quotas')
+      .select('tokens_used, plan, valid_until, last_reset')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error) {
+      console.warn('Avviso recupero quota AI:', error.message || error);
+      return null;
+    }
+
+    if (!data) {
+      return {
+        tokensUsed: 0,
+        tokensLimit: AI_LIMIT_FREE,
+        plan: 'free',
+        validUntil: null,
+        lastReset: null,
+      };
+    }
+
+    let plan = (data.plan?.toLowerCase() || 'free') as AiQuotaStatus['plan'];
+    let tokensUsed = Number(data.tokens_used) || 0;
+    const nowMs = Date.now();
+
+    if (data.valid_until) {
+      const expMs = new Date(data.valid_until).getTime();
+      if (!Number.isNaN(expMs) && expMs < nowMs) {
+        plan = 'free';
+        tokensUsed = 0;
+      }
+    }
+
+    const isPaid = plan === 'premium' || plan === 'team' || plan === 'enterprise';
+    if (isPaid && data.last_reset) {
+      const lastResetMs = new Date(data.last_reset).getTime();
+      if (!Number.isNaN(lastResetMs) && nowMs - lastResetMs >= 30 * 24 * 60 * 60 * 1000) {
+        tokensUsed = 0;
+      }
+    }
+
+    return {
+      tokensUsed,
+      tokensLimit: isPaid ? AI_LIMIT_PREMIUM : AI_LIMIT_FREE,
+      plan,
+      validUntil: data.valid_until || null,
+      lastReset: data.last_reset || null,
+    };
+  } catch (error) {
+    console.warn('Eccezione recupero quota AI:', error);
+    return null;
+  }
+};
+
 export const upgradeToPremium = async (userId: string, plan: 'premium' | 'team' | 'enterprise' = 'premium'): Promise<boolean> => {
   try {
     const { error } = await supabase

@@ -38,8 +38,14 @@ function mergeInspections(
 ): Inspection[] {
   // Le ispezioni sono storiche.
   const merged = mergeArrays(local, cloud, deletedIds);
-  // Ordiniamo per data decrescente per coerenza
-  return merged.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  // Ordiniamo per data e orario decrescente per coerenza
+  return merged.sort((a, b) => {
+    const dateA = a.date ? new Date(a.date).getTime() : 0;
+    const dateB = b.date ? new Date(b.date).getTime() : 0;
+    const dateDiff = (Number.isNaN(dateB) ? 0 : dateB) - (Number.isNaN(dateA) ? 0 : dateA);
+    if (dateDiff !== 0) return dateDiff;
+    return (b.time || '').localeCompare(a.time || '');
+  });
 }
 
 function mergeHives(

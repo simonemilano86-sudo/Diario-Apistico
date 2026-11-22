@@ -35,10 +35,16 @@ const HiveCard: React.FC<HiveCardProps> = ({ hive, onSelect, onDelete, onEdit })
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
 
-    // Fallback se gli array sono undefined
-    const inspections = hive.inspections || [];
+    // Fallback se gli array sono undefined (esclude ispezioni nel cestino e non muta l'array originale)
+    const inspections = (hive.inspections || []).filter(i => i && !i._deleted);
     const style = statusStyles[hive.status] || statusStyles[HiveStatus.HEALTHY];
-    const lastInspection = inspections.length > 0 ? inspections.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0] : null;
+    const lastInspection = inspections.length > 0
+        ? [...inspections].sort((a, b) => {
+            const dateDiff = (new Date(b.date).getTime() || 0) - (new Date(a.date).getTime() || 0);
+            if (dateDiff !== 0) return dateDiff;
+            return (b.time || '').localeCompare(a.time || '');
+        })[0]
+        : null;
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {

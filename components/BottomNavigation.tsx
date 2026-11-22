@@ -13,7 +13,7 @@ const BottomNavigation: React.FC<BottomNavigationProps> = ({ currentView, setCur
     const isActive = (tab: 'home' | 'calendar' | 'tools' | 'ai') => {
         switch (tab) {
             case 'home':
-                return currentView === 'dashboard' || currentView === 'apiaryDetails' || currentView === 'hiveDetails';
+                return currentView === 'dashboard' || currentView === 'apiaryDetails' || currentView === 'hiveDetails' || currentView === 'apiaryLog';
             case 'calendar':
                 return currentView === 'calendar';
             case 'tools':

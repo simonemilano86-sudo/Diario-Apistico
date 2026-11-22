@@ -496,7 +496,7 @@ const InspectionModal: React.FC<InspectionModalProps> = ({ isOpen, onClose, onSa
                                 Attiva "Applica a tutte le arnie" per registrare candito, nutrizione o trattamenti a tappeto.
                             </p>
                         )}
-                        <textarea id="actions" name="actions" rows={3} value={inspection.actions} onChange={handleChange} className="w-full border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white rounded-md" placeholder="es. Aggiunto melario, posato candito..."></textarea>
+                        <textarea id="actions" name="actions" rows={3} value={inspection.actions} onChange={handleChange} className="w-full h-24 resize-none overflow-y-auto border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white rounded-md" placeholder="es. Aggiunto melario, posato candito..."></textarea>
                     </div>
 
                     <div className="border border-slate-200 dark:border-slate-700 rounded-md p-4 bg-slate-50 dark:bg-slate-800/50">

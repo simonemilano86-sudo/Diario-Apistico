@@ -86,10 +86,10 @@ import {
 
 type DeleteItem =
   | { type: 'apiary'; id: string; name: string }
-  | { type: 'hive'; id: string; name: string }
-  | { type: 'inspection'; id: string }
-  | { type: 'movement'; id: string }
-  | { type: 'production'; id: string }
+  | { type: 'hive'; id: string; name: string; apiaryId?: string }
+  | { type: 'inspection'; id: string; apiaryId?: string; hiveId?: string }
+  | { type: 'movement'; id: string; apiaryId?: string; hiveId?: string }
+  | { type: 'production'; id: string; apiaryId?: string; hiveId?: string }
   | { type: 'production-group'; apiaryId: string; date: string; apiaryName: string }
   | { type: 'event'; id: string };
 
@@ -380,6 +380,17 @@ const App: React.FC = () => {
   const [showSyncModal, setShowSyncModal] = useState(true);
 
   const pendingSyncApiaries = useMemo(() => activeApiaries.filter(a => a.pendingLocationSync), [activeApiaries]);
+
+  const currentSelectedApiary = useMemo(() => {
+    if (!selectedApiary) return null;
+    return activeApiaries.find(a => a.id === selectedApiary.id) || null;
+  }, [activeApiaries, selectedApiary]);
+
+  const currentSelectedHive = useMemo(() => {
+    if (!currentSelectedApiary || !selectedHive) return null;
+    return currentSelectedApiary.hives.find(h => h.id === selectedHive.id) || null;
+  }, [currentSelectedApiary, selectedHive]);
+
   useEffect(() => {
     if (selectedApiary) {
       const updatedApiary = activeApiaries.find(a => a.id === selectedApiary.id);
@@ -398,7 +409,7 @@ const App: React.FC = () => {
         // Se l'apiario è stato eliminato, torna alla dashboard
         setSelectedApiary(null);
         setSelectedHive(null);
-        if (view === 'apiaryDetails' || view === 'hiveDetails') {
+        if (view === 'apiaryDetails' || view === 'hiveDetails' || view === 'apiaryLog') {
           setView('dashboard');
         }
       }
@@ -796,10 +807,23 @@ const App: React.FC = () => {
         isNavigatingRef.current = true;
         const { view: targetView, apiaryId, hiveId } = event.state;
         
-        // Se c'è un apiario nel cronologia, cercalo
+        // Se c'è un apiario nella cronologia, cercalo (escludendo elementi eliminati)
         if (apiaryId) {
-          const foundApiary = apiariesRef.current.find(a => a.id === apiaryId);
-          setSelectedApiary(foundApiary || null);
+          const rawApiary = apiariesRef.current.find(a => a.id === apiaryId && !a._deleted);
+          const foundApiary = rawApiary
+            ? {
+                ...rawApiary,
+                hives: (rawApiary.hives || [])
+                  .filter(h => !h._deleted)
+                  .map(h => ({
+                    ...h,
+                    inspections: (h.inspections || []).filter(i => !i._deleted),
+                    productionRecords: (h.productionRecords || []).filter(r => !r._deleted),
+                    movements: (h.movements || []).filter(m => !m._deleted),
+                  })),
+              }
+            : null;
+          setSelectedApiary(foundApiary);
           
           if (hiveId && foundApiary) {
             const foundHive = foundApiary.hives.find(h => h.id === hiveId);
@@ -1682,42 +1706,71 @@ const App: React.FC = () => {
   };
 
   const handleSaveHive = (hivesData: Omit<Hive, 'id' | 'inspections'> | Omit<Hive, 'id' | 'inspections'>[]) => {
-    if (!selectedApiary) return;
+    if (!currentSelectedApiary) return;
     const hivesArray = Array.isArray(hivesData) ? hivesData : [hivesData];
 
-    let nextHives: Hive[];
-    if (hiveToEdit && hivesArray.length === 1) {
-      const hiveToSave: Hive = { ...hiveToEdit, ...hivesArray[0] };
-      nextHives = selectedApiary.hives.map(h => h.id === hiveToEdit.id ? hiveToSave : h);
-    } else {
-      const newHives: Hive[] = hivesArray.map(h => ({
-        ...h,
-        id: crypto.randomUUID(),
-        inspections: []
-      }));
-      nextHives = [...selectedApiary.hives, ...newHives];
-    }
-
-    const nextApiaries = apiaries.map(a => a.id !== selectedApiary.id ? a : { ...a, hives: nextHives });
-    setApiaries(nextApiaries);
-    apiariesRef.current = nextApiaries;
+    setApiaries(prevApiaries => {
+      const nextApiaries = prevApiaries.map(a => {
+        if (a.id !== currentSelectedApiary.id) return a;
+        let nextHives: Hive[];
+        if (hiveToEdit && hivesArray.length === 1) {
+          nextHives = (a.hives || []).map(h =>
+            h.id === hiveToEdit.id
+              ? { ...h, ...hivesArray[0], inspections: h.inspections || [] }
+              : h
+          );
+        } else {
+          const newHives: Hive[] = hivesArray.map(h => ({
+            ...h,
+            id: crypto.randomUUID(),
+            inspections: []
+          }));
+          nextHives = [...(a.hives || []), ...newHives];
+        }
+        return { ...a, hives: nextHives };
+      });
+      apiariesRef.current = nextApiaries;
+      return nextApiaries;
+    });
     setIsHiveModalOpen(false); setHiveToEdit(null); triggerSave();
   };
 
   const handleSaveInspection = (inspection: Inspection, bulkOptions?: { applyActions: boolean }) => {
-    if (!selectedHive || !selectedApiary) return;
-    const inspWithAudit = { ...inspection, createdBy: user?.name || user?.email };
-    const nextApiaries = apiaries.map(a => {
-        if (a.id !== selectedApiary.id) return a;
-        return { ...a, hives: a.hives.map(h => {
-                if (h.id === selectedHive.id) { const exists = h.inspections?.find(i => i.id === inspection.id); return { ...h, inspections: exists ? h.inspections.map(i => i.id === inspection.id ? inspWithAudit : i) : [...(h.inspections || []), inspWithAudit] }; }
-                if (bulkOptions?.applyActions) return { ...h, inspections: [...(h.inspections || []), { ...inspWithAudit, id: crypto.randomUUID(), sawQueen: false, sawEggs: false, noBrood: false }] };
-                return h;
-            })
+    if (!currentSelectedHive || !currentSelectedApiary) return;
+    const bulkGroupId = bulkOptions?.applyActions ? crypto.randomUUID() : inspection.bulkGroupId;
+    const inspWithAudit: Inspection = {
+      ...inspection,
+      createdBy: user?.name || user?.email,
+      ...(bulkGroupId ? { bulkGroupId } : {})
+    };
+    setApiaries(prevApiaries => {
+      const nextApiaries = prevApiaries.map(a => {
+        if (a.id !== currentSelectedApiary.id) return a;
+        return {
+          ...a,
+          hives: (a.hives || []).map(h => {
+            if (h.id === currentSelectedHive.id) {
+              const exists = (h.inspections || []).find(i => i.id === inspection.id);
+              return {
+                ...h,
+                inspections: exists
+                  ? (h.inspections || []).map(i => i.id === inspection.id ? inspWithAudit : i)
+                  : [...(h.inspections || []), inspWithAudit]
+              };
+            }
+            if (bulkOptions?.applyActions && !h._deleted) {
+              return {
+                ...h,
+                inspections: [...(h.inspections || []), { ...inspWithAudit, id: crypto.randomUUID(), sawQueen: false, sawEggs: false, noBrood: false }]
+              };
+            }
+            return h;
+          })
         };
+      });
+      apiariesRef.current = nextApiaries;
+      return nextApiaries;
     });
-    setApiaries(nextApiaries);
-    apiariesRef.current = nextApiaries;
     setIsInspectionModalOpen(false); setInspectionToEdit(null); triggerSave();
   };
 
@@ -1750,7 +1803,67 @@ const App: React.FC = () => {
     setIsProductionModalOpen(false); setProductionToEdit(null); triggerSave();
   };
 
-  const executeDelete = useCallback(async () => {
+  const inspectionBulkMatches = useMemo(() => {
+    if (!deleteConfirmation || deleteConfirmation.type !== 'inspection') return [];
+    const { id, apiaryId, hiveId } = deleteConfirmation;
+    if (!apiaryId) return [];
+
+    const targetApiary = activeApiaries.find(a => a.id === apiaryId);
+    if (!targetApiary) return [];
+
+    const sourceHive = hiveId
+      ? targetApiary.hives.find(h => h.id === hiveId)
+      : targetApiary.hives.find(h => h.inspections.some(i => i.id === id));
+    const targetInsp = sourceHive?.inspections.find(i => i.id === id);
+    if (!targetInsp) return [];
+
+    const matches: { hiveId: string; inspectionId: string }[] = [];
+
+    if (targetInsp.bulkGroupId) {
+      targetApiary.hives.forEach(h => {
+        h.inspections.forEach(i => {
+          if (i.bulkGroupId === targetInsp.bulkGroupId) {
+            matches.push({ hiveId: h.id, inspectionId: i.id });
+          }
+        });
+      });
+      return matches;
+    }
+
+    // Fallback per ispezioni massive salvate prima dell'introduzione di bulkGroupId
+    const norm = (v?: string) => (v || '').trim();
+    const hasDistinctContent =
+      norm(targetInsp.actions) !== '' ||
+      (norm(targetInsp.treatment) !== '' && norm(targetInsp.treatment) !== 'Nessuno') ||
+      (norm(targetInsp.feeding) !== '' && norm(targetInsp.feeding) !== 'Nessuna') ||
+      (norm(targetInsp.disease) !== '' && norm(targetInsp.disease) !== 'Nessuna');
+
+    if (!targetInsp.date || (!targetInsp.time && !hasDistinctContent)) {
+      return [];
+    }
+
+    targetApiary.hives.forEach(h => {
+      if (sourceHive && h.id === sourceHive.id) {
+        matches.push({ hiveId: h.id, inspectionId: targetInsp.id });
+        return;
+      }
+      const match = h.inspections.find(i =>
+        i.date === targetInsp.date &&
+        norm(i.time) === norm(targetInsp.time) &&
+        norm(i.actions) === norm(targetInsp.actions) &&
+        norm(i.treatment) === norm(targetInsp.treatment) &&
+        norm(i.feeding) === norm(targetInsp.feeding) &&
+        norm(i.disease) === norm(targetInsp.disease)
+      );
+      if (match) {
+        matches.push({ hiveId: h.id, inspectionId: match.id });
+      }
+    });
+
+    return matches;
+  }, [deleteConfirmation, activeApiaries]);
+
+  const executeDelete = useCallback(async (scope: 'single' | 'all-hives' = 'single') => {
     if (!deleteConfirmation) return;
     const { type, id } = deleteConfirmation as any;
     
@@ -1777,19 +1890,35 @@ const App: React.FC = () => {
       }
       case 'inspection': {
         const { apiaryId, hiveId } = deleteConfirmation as any;
-        nextApiaries = apiaries.map(a => {
-          if (apiaryId && a.id !== apiaryId) return a;
-          return {
-            ...a,
-            hives: a.hives.map(h => {
-              if (hiveId && h.id !== hiveId) return h;
-              return {
+        if (scope === 'all-hives' && inspectionBulkMatches.length > 1) {
+          const idsToDelete = new Set(inspectionBulkMatches.map(m => m.inspectionId));
+          nextApiaries = apiaries.map(a => {
+            if (apiaryId && a.id !== apiaryId) return a;
+            return {
+              ...a,
+              hives: (a.hives || []).map(h => ({
                 ...h,
-                inspections: (h.inspections || []).map(i => i.id === id ? { ...i, _deleted: true, _deletedAt: now } : i)
-              };
-            })
-          };
-        });
+                inspections: (h.inspections || []).map(i =>
+                  idsToDelete.has(i.id) ? { ...i, _deleted: true, _deletedAt: now } : i
+                )
+              }))
+            };
+          });
+        } else {
+          nextApiaries = apiaries.map(a => {
+            if (apiaryId && a.id !== apiaryId) return a;
+            return {
+              ...a,
+              hives: a.hives.map(h => {
+                if (hiveId && h.id !== hiveId) return h;
+                return {
+                  ...h,
+                  inspections: (h.inspections || []).map(i => i.id === id ? { ...i, _deleted: true, _deletedAt: now } : i)
+                };
+              })
+            };
+          });
+        }
         break;
       }
       case 'event': 
@@ -1851,7 +1980,7 @@ const App: React.FC = () => {
     setHasUnsavedChanges(true);
     setTimeout(() => forceSync(), 100);
     setDeleteConfirmation(null);
-  }, [deleteConfirmation, apiaries, calendarEvents, forceSync]);
+  }, [deleteConfirmation, apiaries, calendarEvents, forceSync, inspectionBulkMatches]);
 
   const handleRestore = useCallback((id: string, type: string) => {
     let nextApiaries = [...apiaries];
@@ -2087,13 +2216,13 @@ const App: React.FC = () => {
               </div>
             )}
     
-            {view === 'apiaryDetails' && selectedApiary && <ApiaryDetails apiary={selectedApiary} onBack={() => { window.history.back(); }} onSelectHive={handleSelectHive} onAddHive={() => { setHiveToEdit(null); setIsHiveModalOpen(true); }} onDeleteApiary={canDelete ? () => setDeleteConfirmation({ type: 'apiary', id: selectedApiary.id, name: selectedApiary.name }) : undefined} onDeleteHive={(id) => setDeleteConfirmation({ type: 'hive', id, name: selectedApiary.hives.find(h=>h.id===id)?.name || 'Arnia', apiaryId: selectedApiary.id })} onEditApiary={() => { setApiaryToEdit(selectedApiary); setIsApiaryModalOpen(true); }} onEditHive={(hive) => { setHiveToEdit(hive); setIsHiveModalOpen(true); }} onTransferHives={() => setIsTransferModalOpen(true)} isScrolling={isScrolling} canDelete={canDelete} canEdit={canEdit} canAdd={canEdit} onOpenLog={() => navigateTo('apiaryLog', selectedApiary.id)} />}
-            {view === 'apiaryLog' && selectedApiary && <ApiaryLogView apiary={selectedApiary} onBack={() => window.history.back()} />}
+            {view === 'apiaryDetails' && currentSelectedApiary && <ApiaryDetails apiary={currentSelectedApiary} onBack={() => { window.history.back(); }} onSelectHive={handleSelectHive} onAddHive={() => { setHiveToEdit(null); setIsHiveModalOpen(true); }} onDeleteApiary={canDelete ? () => setDeleteConfirmation({ type: 'apiary', id: currentSelectedApiary.id, name: currentSelectedApiary.name }) : undefined} onDeleteHive={(id) => setDeleteConfirmation({ type: 'hive', id, name: currentSelectedApiary.hives.find(h=>h.id===id)?.name || 'Arnia', apiaryId: currentSelectedApiary.id })} onEditApiary={() => { setApiaryToEdit(currentSelectedApiary); setIsApiaryModalOpen(true); }} onEditHive={(hive) => { setHiveToEdit(hive); setIsHiveModalOpen(true); }} onTransferHives={() => setIsTransferModalOpen(true)} isScrolling={isScrolling} canDelete={canDelete} canEdit={canEdit} canAdd={canEdit} onOpenLog={() => navigateTo('apiaryLog', currentSelectedApiary.id)} />}
+            {view === 'apiaryLog' && currentSelectedApiary && <ApiaryLogView apiary={currentSelectedApiary} onBack={() => window.history.back()} onSelectHive={handleSelectHive} />}
     
-            {view === 'hiveDetails' && selectedHive && selectedApiary && <HiveDetails hive={selectedHive} onBack={() => { window.history.back(); }} onAddInspection={() => { setInspectionToEdit(null); setIsInspectionModalOpen(true); }} onAddProduction={() => { setProductionToEdit(null); setIsProductionModalOpen(true); }} onEditHive={(h) => { setHiveToEdit(h); setIsHiveModalOpen(true); }} onUpdateHive={handleDirectHiveUpdate} onDeleteHive={(id) => setDeleteConfirmation({ type: 'hive', id, name: selectedHive.name, apiaryId: selectedApiary.id })} onDeleteInspection={(id) => { if (canDelete) setDeleteConfirmation({ type: 'inspection', id, apiaryId: selectedApiary.id, hiveId: selectedHive.id }); }} onEditInspection={(i) => { setInspectionToEdit(i); setIsInspectionModalOpen(true); }} onDeleteMovement={(id) => { if (canDelete) setDeleteConfirmation({ type: 'movement', id, apiaryId: selectedApiary.id, hiveId: selectedHive.id }); }} onEditMovement={(m) => { setMovementToEdit(m); setIsMovementModalOpen(true); }} onDeleteProduction={(id) => { if (canDelete) setDeleteConfirmation({ type: 'production', id, apiaryId: selectedApiary.id, hiveId: selectedHive.id }); }} onEditProduction={(r) => { setProductionToEdit(r); setIsProductionModalOpen(true); }} onOpenCalendar={() => { if (user?.plan === 'free') { setIsPremiumModalOpen(true); } else { navigateTo('calendar'); } }} isScrolling={isScrolling} canDelete={canDelete} canEdit={canEdit} canAdd={canEdit} hasTeamMembers={teamMembers.length > 1} currentUserEmail={user?.email} currentUserName={user?.name} />}
+            {view === 'hiveDetails' && currentSelectedHive && currentSelectedApiary && <HiveDetails hive={currentSelectedHive} onBack={() => { window.history.back(); }} onAddInspection={() => { setInspectionToEdit(null); setIsInspectionModalOpen(true); }} onAddProduction={() => { setProductionToEdit(null); setIsProductionModalOpen(true); }} onEditHive={(h) => { setHiveToEdit(h); setIsHiveModalOpen(true); }} onUpdateHive={handleDirectHiveUpdate} onDeleteHive={(id) => setDeleteConfirmation({ type: 'hive', id, name: currentSelectedHive.name, apiaryId: currentSelectedApiary.id })} onDeleteInspection={(id) => { if (canDelete) setDeleteConfirmation({ type: 'inspection', id, apiaryId: currentSelectedApiary.id, hiveId: currentSelectedHive.id }); }} onEditInspection={(i) => { setInspectionToEdit(i); setIsInspectionModalOpen(true); }} onDeleteMovement={(id) => { if (canDelete) setDeleteConfirmation({ type: 'movement', id, apiaryId: currentSelectedApiary.id, hiveId: currentSelectedHive.id }); }} onEditMovement={(m) => { setMovementToEdit(m); setIsMovementModalOpen(true); }} onDeleteProduction={(id) => { if (canDelete) setDeleteConfirmation({ type: 'production', id, apiaryId: currentSelectedApiary.id, hiveId: currentSelectedHive.id }); }} onEditProduction={(r) => { setProductionToEdit(r); setIsProductionModalOpen(true); }} onOpenCalendar={() => { if (user?.plan === 'free') { setIsPremiumModalOpen(true); } else { navigateTo('calendar'); } }} isScrolling={isScrolling} canDelete={canDelete} canEdit={canEdit} canAdd={canEdit} hasTeamMembers={teamMembers.length > 1} currentUserEmail={user?.email} currentUserName={user?.name} />}
     
             {view === 'calendar' && <CalendarView apiaries={activeApiaries} events={activeEvents} onAddEvent={(e) => { const ev = {...e, createdBy: user?.email}; setCalendarEvents(prev => [...prev, ev]); triggerSave(); }} onDeleteEvent={(id) => setDeleteConfirmation({ type: 'event', id })} onEditEvent={(e) => { setCalendarEventToEdit(e); setIsCalendarModalOpen(true); }} onBack={() => window.history.back()} onOpenModal={() => { if (user?.plan === 'free') { setIsPremiumModalOpen(true); } else { setCalendarEventToEdit(null); setIsCalendarModalOpen(true); } }} isScrolling={isScrolling} canDelete={canDelete} />}
-            {view === 'aiAssistant' && <AiAssistant user={user} messages={aiMessages} setMessages={setAiMessages} />}
+            {view === 'aiAssistant' && <AiAssistant user={user} userId={currentUserId} messages={aiMessages} setMessages={setAiMessages} />}
             {view === 'seasonalNotes' && <ToolsView apiaries={activeApiaries} onBack={() => window.history.back()} notes={activeNotes} onSaveNote={(n) => { setSeasonalNotes(prev => { const ex = prev.find(x=>x.id===n.id); return ex ? prev.map(x=>x.id===n.id?n:x) : [...prev, n]; }); triggerSave(); }} isBloomModalOpen={isBloomModalOpen} setIsBloomModalOpen={setIsBloomModalOpen} isScrolling={isScrolling} />}
             {view === 'bilancia' && <ScaleDashboard apiaries={activeApiaries} onBack={() => window.history.back()} />}
             {view === 'nfc' && <NfcView apiaries={activeApiaries} onBack={() => window.history.back()} onOpenConfig={() => setIsNfcModalOpen(true)} onRemoveTag={(hid) => { setApiaries(prev => prev.map(a => ({ ...a, hives: a.hives.map(h => h.id === hid ? { ...h, nfcTagId: undefined } : h) }))); triggerSave(); }} isScrolling={isScrolling} onTagScanned={(id) => { const a = apiaries.find(ap => ap.hives.some(h => h.nfcTagId?.toUpperCase() === id.toUpperCase())); if (a) { const h = a.hives.find(hv => hv.nfcTagId?.toUpperCase() === id.toUpperCase())!; setSelectedApiary(a); setSelectedHive(h); navigateTo('hiveDetails', a.id, h.id); } else alert('Tag non associato.'); }} />}
@@ -2321,7 +2450,48 @@ const App: React.FC = () => {
         </div>
       </Modal>
 
-      {deleteConfirmation && (<Modal isOpen={!!deleteConfirmation} onClose={() => setDeleteConfirmation(null)} title="Elimina"><div className="space-y-4"><p>Eliminare {(deleteConfirmation as any).name || 'questo elemento'}?</p><div className="flex justify-end gap-3"><button onClick={() => setDeleteConfirmation(null)} className="px-4 py-2 bg-slate-500 text-white rounded hover:bg-slate-600">Annulla</button><button onClick={executeDelete} className="px-4 py-2 bg-red-600 text-white rounded">Elimina</button></div></div></Modal>)}
+      {deleteConfirmation && (
+        <Modal isOpen={!!deleteConfirmation} onClose={() => setDeleteConfirmation(null)} title="Elimina">
+          {deleteConfirmation.type === 'inspection' && inspectionBulkMatches.length > 1 ? (
+            <div className="space-y-4">
+              <p className="text-sm text-slate-700 dark:text-slate-200 leading-relaxed">
+                Questa ispezione è presente su <span className="font-bold text-amber-600 dark:text-amber-400">{inspectionBulkMatches.length} arnie</span> di questo apiario. Come vuoi eliminarla?
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Le ispezioni eliminate restano recuperabili nel Cestino per 10 giorni.
+              </p>
+              <div className="flex flex-col gap-2.5 pt-2">
+                <button
+                  onClick={() => executeDelete('single')}
+                  className="w-full py-2.5 px-4 bg-slate-100 dark:bg-slate-700 text-slate-800 dark:text-slate-100 font-semibold rounded-lg hover:bg-slate-200 dark:hover:bg-slate-600 transition text-sm"
+                >
+                  Elimina solo da questa arnia
+                </button>
+                <button
+                  onClick={() => executeDelete('all-hives')}
+                  className="w-full py-2.5 px-4 bg-red-600 text-white font-bold rounded-lg hover:bg-red-700 transition shadow-sm text-sm"
+                >
+                  Elimina da tutte le {inspectionBulkMatches.length} arnie
+                </button>
+                <button
+                  onClick={() => setDeleteConfirmation(null)}
+                  className="w-full py-2 px-4 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 font-medium text-sm transition"
+                >
+                  Annulla
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <p>Eliminare {(deleteConfirmation as any).name || 'questo elemento'}?</p>
+              <div className="flex justify-end gap-3">
+                <button onClick={() => setDeleteConfirmation(null)} className="px-4 py-2 bg-slate-500 text-white rounded hover:bg-slate-600">Annulla</button>
+                <button onClick={() => executeDelete('single')} className="px-4 py-2 bg-red-600 text-white rounded">Elimina</button>
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
       
       {console.log("DEBUG RENDER: hasSeenWelcome=", hasSeenWelcome, "loading=", loading, "user=", !!user)}
       {isOnline && pendingSyncApiaries.length > 0 && !isApiaryModalOpen && showSyncModal && (

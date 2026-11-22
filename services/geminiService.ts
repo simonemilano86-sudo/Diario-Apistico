@@ -2,15 +2,19 @@ import { supabase } from './supabase';
 
 const getBeekeepingAdvice = async (prompt: string, imageBase64?: string, history?: any[]): Promise<string> => {
     try {
-        // Verifica che l'utente sia autenticato prima di chiamare la funzione
-        const { data: { session } } = await supabase.auth.getSession();
-        
+        // Verifica e aggiorna la sessione se il token è vicino alla scadenza
+        let { data: { session } } = await supabase.auth.getSession();
+
+        if (session?.expires_at && session.expires_at * 1000 < Date.now() + 30000) {
+            const { data: refreshed } = await supabase.auth.refreshSession();
+            if (refreshed.session) {
+                session = refreshed.session;
+            }
+        }
+
         if (!session) {
             return "Devi accedere per utilizzare l'Assistente IA.";
         }
-
-        // Chiama la Edge Function di Supabase
-        console.log("Inviando richiesta a Gemini con token:", session.access_token ? "Presente" : "Mancante");
 
         const { data, error } = await supabase.functions.invoke('ask-gemini', {
             body: { prompt, imageBase64, history },
@@ -20,8 +24,21 @@ const getBeekeepingAdvice = async (prompt: string, imageBase64?: string, history
         });
 
         if (error) {
-            console.error("Errore dalla Edge Function:", error);
-            throw new Error(error.message || "Errore di comunicazione con il server");
+            let detailedMsg = error.message || "Errore di comunicazione con il server";
+            try {
+                if ((error as any).context && typeof (error as any).context.json === 'function') {
+                    const errBody = await (error as any).context.json();
+                    if (errBody?.error) {
+                        detailedMsg = errBody.error;
+                    } else if (errBody?.message) {
+                        detailedMsg = errBody.message;
+                    }
+                }
+            } catch {
+                // fallback al messaggio standard
+            }
+            console.error("Errore dalla Edge Function:", detailedMsg, error);
+            throw new Error(detailedMsg);
         }
 
         if (data && data.error) {

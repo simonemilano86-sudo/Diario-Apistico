@@ -87,7 +87,29 @@ const AcceptInvite: React.FC<AcceptInviteProps> = ({ initialToken, onDone }) => 
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("Utente non loggato");
 
-            // 1. Controlla prima se è un regalo Premium in 'premium_gifts'
+            // 1. Prova prima la RPC sicura lato server per riscattare un regalo Premium
+            const { data: rpcGiftData, error: rpcGiftErr } = await supabase.rpc('claim_premium_gift', {
+                p_token: inviteToken
+            });
+
+            if (!rpcGiftErr && rpcGiftData) {
+                setStatus('success');
+                setMessage("Evviva! Ti è stato regalato Diario Apistico Premium! Il tuo account è ora sbloccato al 100%.");
+                localStorage.removeItem('pending_invite_token');
+                return;
+            }
+
+            const isMissingGiftRpc =
+                rpcGiftErr &&
+                (rpcGiftErr.code === 'PGRST202' ||
+                 rpcGiftErr.code === '42883' ||
+                 String(rpcGiftErr.message || '').toLowerCase().includes('claim_premium_gift'));
+
+            if (rpcGiftErr && !isMissingGiftRpc) {
+                throw rpcGiftErr;
+            }
+
+            // Fallback compatibilità se la RPC non è ancora stata eseguita su Supabase
             const { data: giftData, error: giftError } = await supabase
                 .from('premium_gifts')
                 .select('*')

@@ -1,6 +1,8 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { getBeekeepingAdvice } from '../services/geminiService';
+import { askBeekeepingAssistant } from '../services/geminiService';
+import { fetchAiQuota, AiQuotaStatus, AI_LIMIT_FREE, AI_LIMIT_PREMIUM } from '../services/db';
+import { supabase } from '../services/supabase';
 import { SparklesIcon, CameraIcon, XCircleIcon, PhotoIcon, WarningIcon, TrashIcon } from './Icons';
 import { User, Message } from '../types';
 import Modal from './Modal';
@@ -24,20 +26,24 @@ const MarkdownRenderer: React.FC<{ content: string }> = ({ content }) => {
 
 interface AiAssistantProps {
     user: User | null;
+    userId?: string | null;
     messages: Message[];
     setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
 }
 
-const AiAssistant: React.FC<AiAssistantProps> = ({ user, messages, setMessages }) => {
+const AiAssistant: React.FC<AiAssistantProps> = ({ user, userId, messages, setMessages }) => {
     const [prompt, setPrompt] = useState<string>('');
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [error, setError] = useState<string>('');
     const [selectedImage, setSelectedImage] = useState<string | null>(null);
     const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+    const [quota, setQuota] = useState<AiQuotaStatus | null>(null);
     
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const galleryInputRef = useRef<HTMLInputElement>(null);
     const cameraInputRef = useRef<HTMLInputElement>(null);
+
+    const resolvedUserId = userId || (user as { id?: string } | null)?.id || null;
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -46,6 +52,30 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ user, messages, setMessages }
     useEffect(() => {
         scrollToBottom();
     }, [messages, isLoading]);
+
+    useEffect(() => {
+        let isMounted = true;
+        const loadQuota = async () => {
+            if (!user) {
+                if (isMounted) setQuota(null);
+                return;
+            }
+            let targetId = resolvedUserId;
+            if (!targetId) {
+                const { data: { session } } = await supabase.auth.getSession();
+                targetId = session?.user?.id || null;
+            }
+            if (!targetId) return;
+            const res = await fetchAiQuota(targetId);
+            if (isMounted && res) {
+                setQuota(res);
+            }
+        };
+        loadQuota();
+        return () => {
+            isMounted = false;
+        };
+    }, [user, resolvedUserId, user?.plan]);
 
     const examplePrompts = [
         "Quali sono i segni di una regina che sta cedendo?",
@@ -93,11 +123,25 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ user, messages, setMessages }
                 parts: m.parts
             }));
 
-            const advice = await getBeekeepingAdvice(finalPrompt, selectedImage || undefined, history);
+            const result = await askBeekeepingAssistant(finalPrompt, selectedImage || undefined, history);
             
+            if (typeof result.tokensUsed === 'number' && typeof result.tokensLimit === 'number') {
+                setQuota(prev => ({
+                    tokensUsed: result.tokensUsed!,
+                    tokensLimit: result.tokensLimit!,
+                    plan: (result.plan as AiQuotaStatus['plan']) || prev?.plan || (user?.plan as AiQuotaStatus['plan']) || 'free',
+                    validUntil: prev?.validUntil ?? null,
+                    lastReset: prev?.lastReset ?? null,
+                }));
+            } else if (resolvedUserId) {
+                fetchAiQuota(resolvedUserId).then((res) => {
+                    if (res) setQuota(res);
+                });
+            }
+
             const aiMessage: Message = {
                 role: 'model',
-                parts: [{ text: advice }]
+                parts: [{ text: result.text }]
             };
             setMessages(prev => [...prev, aiMessage]);
             setSelectedImage(null);
@@ -107,6 +151,15 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ user, messages, setMessages }
             setIsLoading(false);
         }
     };
+
+    const effectivePlan = quota?.plan || user?.plan || 'free';
+    const isPaidUser = effectivePlan !== 'free';
+    const tokensLimit = quota?.tokensLimit ?? (isPaidUser ? AI_LIMIT_PREMIUM : AI_LIMIT_FREE);
+    const tokensUsed = Math.min(quota?.tokensUsed ?? 0, tokensLimit);
+    const tokensRemaining = Math.max(0, tokensLimit - tokensUsed);
+    const usagePercent = tokensLimit > 0 ? Math.min(100, Math.round((tokensUsed / tokensLimit) * 100)) : 0;
+    const isNearLimit = usagePercent >= 85;
+    const isExhausted = tokensUsed >= tokensLimit;
 
     return (
         <div className="max-w-4xl mx-auto animate-fade-in flex flex-col h-[calc(100vh-220px)] sm:h-[calc(100vh-180px)]">
@@ -127,13 +180,40 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ user, messages, setMessages }
                             </button>
                         )}
                         {user && (
-                            <span className={`text-xs font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${user.plan !== 'free' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300' : 'bg-slate-100 text-slate-800 dark:bg-slate-700 dark:text-slate-300'}`}>
-                                {user.plan !== 'free' ? 'Premium' : 'Free'}
+                            <span className={`text-xs font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${isPaidUser ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300' : 'bg-slate-100 text-slate-800 dark:bg-slate-700 dark:text-slate-300'}`}>
+                                {isPaidUser ? 'Premium' : 'Free'}
                             </span>
                         )}
                     </div>
                 </div>
                 <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">Chiedi consigli o analizza foto. La conversazione mantiene il contesto.</p>
+
+                {user && (
+                    <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-700/70">
+                        <div className="flex items-center justify-between text-xs mb-1.5 gap-2">
+                            <span className="font-medium text-slate-600 dark:text-slate-300">
+                                Token usati: <strong className="text-slate-800 dark:text-white">{tokensUsed.toLocaleString('it-IT')}</strong> / {tokensLimit.toLocaleString('it-IT')}
+                            </span>
+                            <span className={`font-semibold ${isExhausted ? 'text-red-600 dark:text-red-400' : isNearLimit ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                                {isExhausted
+                                    ? 'Esauriti'
+                                    : `${tokensRemaining.toLocaleString('it-IT')} rimasti (${100 - usagePercent}%)`}
+                            </span>
+                        </div>
+                        <div className="w-full h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                            <div
+                                className={`h-full rounded-full transition-all duration-300 ${isExhausted ? 'bg-red-500' : isNearLimit ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                                style={{ width: `${usagePercent}%` }}
+                            />
+                        </div>
+                        <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400 dark:text-slate-500">
+                            <span>{isPaidUser ? 'Rinnovo mensile automatico (ogni 30 giorni)' : 'Quota prova Free'}</span>
+                            {isExhausted && !isPaidUser && (
+                                <span className="text-amber-600 dark:text-amber-400 font-semibold">Passa a Premium per 200.000 token/mese</span>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
 
             <div className="flex-grow overflow-y-auto bg-white dark:bg-slate-800 rounded-lg shadow-md p-4 mb-3 border border-slate-100 dark:border-slate-700">

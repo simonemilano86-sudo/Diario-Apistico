@@ -105,7 +105,27 @@ export async function claimPremiumInvite(token: string) {
   const { data: { user }, error: userErr } = await supabase.auth.getUser()
   if (userErr || !user) throw new Error('Utente non loggato')
 
-  // 1. Verifica token nella tabella premium_gifts
+  // 1. Prova prima la RPC sicura lato server (claim_premium_gift)
+  const { data: rpcClaimed, error: rpcErr } = await supabase.rpc('claim_premium_gift', {
+    p_token: token,
+  })
+
+  if (!rpcErr && rpcClaimed) {
+    return rpcClaimed
+  }
+
+  // Fallback compatibilità se la RPC non è ancora stata eseguita su Supabase
+  const isMissingRpc =
+    rpcErr &&
+    (rpcErr.code === 'PGRST202' ||
+      rpcErr.code === '42883' ||
+      String(rpcErr.message || '').toLowerCase().includes('claim_premium_gift'))
+
+  if (rpcErr && !isMissingRpc) {
+    throw rpcErr
+  }
+
+  // 1b. Verifica token nella tabella premium_gifts
   const { data, error } = await supabase
     .from('premium_gifts')
     .select('*')

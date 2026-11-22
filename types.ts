@@ -98,6 +98,7 @@ export interface Inspection extends SoftDeletable {
     notes: string;
     audioNote?: string;
     createdBy?: string; // Audit log: Nome dell'utente che ha creato il record
+    bulkGroupId?: string; // ID condiviso per ispezioni applicate a tutte le arnie dell'apiario
 }
 
 export interface HiveMovement extends SoftDeletable {

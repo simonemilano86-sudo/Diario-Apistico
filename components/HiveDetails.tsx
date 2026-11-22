@@ -210,13 +210,20 @@ const HiveDetails: React.FC<HiveDetailsProps> = ({
     const [isFilterVisible, setIsFilterVisible] = useState(false);
     const currentYear = new Date().getFullYear();
 
-    // RIGA 207 CORRETTA: Aggiunto || [] per gestire arnie senza ispezioni
-    const sortedInspections = [...(hive.inspections || [])].sort((a,b) => {
-        const dateDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
-        if (dateDiff !== 0) return dateDiff;
-        if (b.time && a.time) return b.time.localeCompare(a.time);
-        return 0;
-    });
+    // Gestione sicura per arnie senza ispezioni, esclude cestino e ordina anche per orario/ordine di inserimento
+    const sortedInspections = [...(hive.inspections || [])]
+        .map((insp, idx) => ({ insp, idx }))
+        .filter(({ insp }) => insp && !insp._deleted)
+        .sort((a, b) => {
+            const dateA = a.insp.date ? new Date(a.insp.date).getTime() : 0;
+            const dateB = b.insp.date ? new Date(b.insp.date).getTime() : 0;
+            const dateDiff = (Number.isNaN(dateB) ? 0 : dateB) - (Number.isNaN(dateA) ? 0 : dateA);
+            if (dateDiff !== 0) return dateDiff;
+            const timeDiff = (b.insp.time || '').localeCompare(a.insp.time || '');
+            if (timeDiff !== 0) return timeDiff;
+            return b.idx - a.idx;
+        })
+        .map(({ insp }) => insp);
 
     const filteredInspections = sortedInspections.filter(insp => {
         if (!filterMonth) return true;
